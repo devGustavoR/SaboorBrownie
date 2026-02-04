@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+:root {
+  /* Paleta Saboor Brownie */
+  --saboor-bg: #e0c3fc; /* O lilás suave do fundo */
+  --saboor-primary: #2d31a4; /* O índigo vibrante */
+  --saboor-dark: #13141f; /* Texto escuro */
+  --saboor-light: #f6f6f8; /* Fundo cards */
+  --saboor-text: #101019; /* Texto principal */
+
+  /* Fontes */
+  --font-saboor: var(--font-work-sans), sans-serif;
+}
+
+@theme inline {
+  /* Cores personalizadas no Tailwind */
+  --color-primary: var(--saboor-primary);
+  --color-brand-bg: var(--saboor-bg);
+  --color-background-dark: var(--saboor-dark);
+  --color-background-light: var(--saboor-light);
+  --color-text-main: var(--saboor-text);
+
+  /* Fonte */
+  --font-display: var(--font-saboor);
+}
+
+/* Configurações Globais */
+body {
+  background-color: var(--saboor-bg);
+  color: var(--saboor-text);
+  font-family: var(--font-saboor);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Utilitários Específicos */
+@layer utilities {
+  .glass-effect {
+    @apply bg-white/40 backdrop-blur-sm border border-white/20;
+  }
+
+  .card-hover {
+    @apply transition-transform hover:scale-[1.01] duration-300;
+  }
+}

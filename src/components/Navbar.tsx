@@ -10,7 +10,8 @@ const NAV_LINKS = [
   { name: "Custos", href: "/dashboard/custos" },
   { name: "Analytics", href: "/dashboard/analises" },
   { name: "Estoque", href: "/dashboard/estoque" },
-  // { name: "Configurações", href: "/dashboard/settings" },
+  { name: "Materiais", href: "/dashboard/materiais" },
+  { name: "Configurações", href: "/dashboard/settings" },
 ];
 
 export function Navbar() {

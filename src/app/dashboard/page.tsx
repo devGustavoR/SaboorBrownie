@@ -3,79 +3,110 @@
 import { supabase } from "@/lib/supabase";
 import { useEffect, useState } from "react";
 
+// Mapeamento bonito
+const FLAVOR_LABELS: Record<string, string> = {
+  TRADICIONAL: "Tradicional",
+  NINHO: "Ninho",
+  BRIGADEIRO: "Brigadeiro",
+  DOCE_DE_LEITE: "Doce de Leite",
+  MISTO: "Misto",
+  SEM_RECHEIO: "Sem Recheio",
+};
+
 export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
+  const [processingSale, setProcessingSale] = useState(false);
+
   const [profit, setProfit] = useState(0);
   const [salesCount, setSalesCount] = useState(0);
-  const salesGoal = 12;
+  const [products, setProducts] = useState<any[]>([]);
 
-  // Carregar dados reais do Supabase
   const fetchData = async () => {
     setLoading(true);
 
-    // 1. Buscar Vendas com o Custo do Lote relacionado
-    // Nota: Como suas tabelas usam aspas duplas ("LOTES"), precisamos referenciar exatamente assim no select se o Supabase exigir,
-    // mas geralmente a lib js abstrai isso se configurado. Se der erro, tente .from('"VENDAS"')
-    const { data: vendas, error } = await supabase.from("VENDAS").select(`
-        vl_preco_venda,
-        LOTES (
-          vl_custo_unitario
-        )
-      `);
+    // 1. Buscar Preços Configurados
+    const { data: precos } = await supabase.from("TABELA_PRECOS").select("*");
+    if (precos) setProducts(precos);
 
-    if (vendas) {
-      let totalLucro = 0;
-      const totalVendas = vendas.length;
+    // 2. Buscar Vendas (Faturamento)
+    const { data: vendas } = await supabase
+      .from("VENDAS")
+      .select("vl_preco_venda");
 
-      vendas.forEach((venda: any) => {
-        const preco = venda.vl_preco_venda || 0;
-        // Se tiver lote vinculado, pega o custo, senão assume 0 (ou um custo médio fixo se preferir)
-        const custo = venda.LOTES?.vl_custo_unitario || 0;
-        totalLucro += preco - custo;
-      });
+    // 3. Buscar Despesas (Contas Pagas / Embalagens)
+    const { data: despesas } = await supabase
+      .from("DESPESAS")
+      .select("vl_valor");
 
-      setProfit(totalLucro);
-      setSalesCount(totalVendas);
+    if (vendas && despesas) {
+      // Soma Faturamento
+      const totalVendas = vendas.reduce(
+        (acc, curr) => acc + (curr.vl_preco_venda || 0),
+        0,
+      );
+
+      // Soma Despesas
+      const totalDespesas = despesas.reduce(
+        (acc, curr) => acc + (curr.vl_valor || 0),
+        0,
+      );
+
+      // Cálculo Final: Entradas - Saídas
+      // Se você quiser descontar TAMBÉM os ingredientes, precisaria somar o custo dos lotes aqui.
+      // Mas para bater com o Analytics (Caixa), é Vendas - Despesas.
+      const lucroLiquido = totalVendas - totalDespesas;
+
+      setProfit(lucroLiquido);
+      setSalesCount(vendas.length);
     }
     setLoading(false);
   };
 
   useEffect(() => {
-    const load = async () => {
-      await fetchData();
-    };
-    load();
+    fetchData();
   }, []);
 
-  const handleSale = async () => {
-    const { error } = await supabase.from("VENDAS").insert([
-      { vl_preco_venda: 7.0 }, // cd_lote ficará NULL por enquanto
-    ]);
+  const handleSale = async (flavor: string, price: number) => {
+    setProcessingSale(true);
+
+    // 1. Tenta achar lote ATIVO (FIFO)
+    const { data: lotes } = await supabase
+      .from("LOTES")
+      .select("cd_lote")
+      .eq("tp_sabor", flavor)
+      .order("ts_producao", { ascending: true });
+
+    let loteId = null;
+    if (lotes && lotes.length > 0) {
+      loteId = lotes[0].cd_lote;
+    }
+
+    // 2. Vende
+    const { error } = await supabase
+      .from("VENDAS")
+      .insert([{ vl_preco_venda: price, cd_lote: loteId }]);
 
     if (!error) {
-      fetchData(); // Recarrega os dados
+      fetchData();
     } else {
-      console.error("Erro ao vender:", error);
+      alert("Erro ao registrar venda.");
+      console.error(error);
     }
+    setProcessingSale(false);
   };
-
-  const progressPercentage = Math.min((salesCount / salesGoal) * 100, 100);
 
   return (
     <div className="flex flex-col h-full bg-brand-bg text-[#101019]">
       <main className="flex-1 flex flex-col items-center justify-center px-4 py-6 md:px-6">
-        <div className="layout-content-container flex flex-col w-full max-w-[500px] gap-6">
-          {/* Main Stats Card */}
-          <div className="flex flex-col items-center justify-center rounded-[24px] bg-white p-10 shadow-lg shadow-purple-900/5 text-center transition-transform hover:scale-[1.01]">
-            <div className="mb-4 p-3 bg-purple-50 rounded-full text-primary">
-              <span className="material-symbols-outlined text-4xl">
-                payments
-              </span>
-            </div>
-            <p className="text-[#585a8d] text-base font-medium leading-normal mb-1">
-              Lucro Líquido Real
+        <div className="layout-content-container flex flex-col w-full max-w-[600px] gap-6">
+          {/* Lucro Card */}
+          <div className="flex flex-col items-center justify-center rounded-[24px] bg-white p-8 shadow-lg shadow-purple-900/5 text-center transition-transform hover:scale-[1.01]">
+            <p className="text-[#585a8d] text-sm font-bold uppercase tracking-wider mb-1">
+              Saldo de Caixa (Vendas - Gastos)
             </p>
-            <p className="text-[#101019] tracking-tight text-5xl font-bold leading-tight">
+            <p
+              className={`tracking-tight text-5xl font-black leading-tight ${profit >= 0 ? "text-[#101019]" : "text-red-500"}`}
+            >
               {loading
                 ? "..."
                 : profit.toLocaleString("pt-BR", {
@@ -83,57 +114,41 @@ export default function DashboardPage() {
                     currency: "BRL",
                   })}
             </p>
+            <p className="text-sm text-gray-400 mt-2">
+              {salesCount} vendas realizadas
+            </p>
           </div>
 
-          {/* Action Button */}
-          <button
-            onClick={handleSale}
-            disabled={loading}
-            className="group relative w-full cursor-pointer overflow-hidden rounded-full h-14 bg-primary text-white shadow-lg shadow-indigo-500/30 transition-all hover:bg-[#23268a] active:scale-[0.98] disabled:opacity-70"
-          >
-            <div className="flex items-center justify-center gap-2">
-              <span className="material-symbols-outlined">
-                add_shopping_cart
-              </span>
-              <span className="text-lg font-bold leading-normal tracking-[0.015em]">
-                {loading ? "Processando..." : "Vender 1 (R$ 7,00)"}
-              </span>
-            </div>
-          </button>
+          {/* Grid de Vendas (POS) */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {products.length === 0 && !loading && (
+              <div className="col-span-3 text-center text-gray-400 py-4 bg-white/50 rounded-xl border border-dashed border-gray-300">
+                Configure os preços na aba Configurações.
+              </div>
+            )}
 
-          {/* Progress (Mantido igual) */}
-          <div className="flex flex-col gap-4 p-6 rounded-[24px] bg-white shadow-md shadow-purple-900/5">
-            {/* ... código da barra de progresso igual ao anterior ... */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-primary">
-                  trending_up
+            {products.map((prod) => (
+              <button
+                key={prod.tp_sabor}
+                onClick={() => handleSale(prod.tp_sabor, prod.vl_preco)}
+                disabled={processingSale}
+                className="flex flex-col items-center justify-center bg-white p-4 rounded-2xl shadow-sm border border-transparent hover:border-primary hover:shadow-md transition-all active:scale-95 disabled:opacity-50"
+              >
+                <span className="font-bold text-[#101019] text-sm">
+                  {FLAVOR_LABELS[prod.tp_sabor] || prod.tp_sabor}
                 </span>
-                <p className="text-[#101019] text-base font-bold leading-normal">
-                  Meta da Semana
-                </p>
-              </div>
-              <span className="text-xs font-bold px-2 py-1 bg-green-100 text-green-700 rounded-lg">
-                {salesCount >= salesGoal ? "Concluída!" : "Em andamento"}
-              </span>
-            </div>
-            <div className="flex flex-col gap-2">
-              <div className="relative h-4 w-full rounded-full bg-[#f0f0f5] overflow-hidden">
-                <div
-                  className="absolute top-0 left-0 h-full rounded-full bg-gradient-to-r from-primary to-indigo-400 transition-all duration-500 ease-out"
-                  style={{ width: `${progressPercentage}%` }}
-                ></div>
-              </div>
-              <div className="flex justify-between items-center mt-1">
-                <p className="text-[#585a8d] text-sm font-medium">
-                  {salesCount} de {salesGoal} unidades
-                </p>
-                <p className="text-[#101019] text-sm font-bold">
-                  {Math.round(progressPercentage)}%
-                </p>
-              </div>
-            </div>
+                <span className="text-primary font-black text-lg">
+                  R$ {prod.vl_preco}
+                </span>
+              </button>
+            ))}
           </div>
+
+          {!products.find((p) => p.tp_sabor === "SEM_RECHEIO") && (
+            <p className="text-center text-xs text-gray-400">
+              Dica: Adicione "Sem Recheio" nas configurações.
+            </p>
+          )}
         </div>
       </main>
     </div>

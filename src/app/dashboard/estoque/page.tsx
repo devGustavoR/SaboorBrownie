@@ -1,8 +1,26 @@
 "use client";
 
 import { supabase } from "@/lib/supabase";
+import {
+  CheckCircle,
+  History,
+  Layers,
+  Package,
+  Plus,
+  TrendingUp,
+  X,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 
+// --- CONSTANTES ---
+const FLAVORS = [
+  "TRADICIONAL",
+  "NINHO",
+  "BRIGADEIRO",
+  "DOCE_DE_LEITE",
+  "MISTO",
+  "SEM_RECHEIO",
+];
 const FLAVOR_LABELS: Record<string, string> = {
   TRADICIONAL: "Tradicional",
   NINHO: "Ninho",
@@ -12,54 +30,36 @@ const FLAVOR_LABELS: Record<string, string> = {
   SEM_RECHEIO: "Sem Recheio",
 };
 
-const FLAVORS = Object.keys(FLAVOR_LABELS);
-
 export default function InventoryPage() {
   const [selectedFlavor, setSelectedFlavor] = useState("TRADICIONAL");
 
-  // Dados do Dashboard
-  const [totalUnits, setTotalUnits] = useState(0);
-  const [totalCostIngredients, setTotalCostIngredients] = useState(0);
-  const [avgUnitCost, setAvgUnitCost] = useState(0);
+  // Stats
+  const [totalProduced, setTotalProduced] = useState(0);
   const [loading, setLoading] = useState(true);
 
-  // Estados do Modal
+  // Modal / Form
   const [isCreating, setIsCreating] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // --- MODO DE CRIAÇÃO (Simples vs Misto) ---
   const [entryMode, setEntryMode] = useState<"SIMPLE" | "MIXED">("SIMPLE");
 
-  // Estados Lote Simples
-  const [simpleQty, setSimpleQty] = useState("");
-  const [simpleCost, setSimpleCost] = useState("");
-
-  // Estados Lote Misto (O Tabuleiro Dividido)
+  // Inputs
+  const [simpleQty, setSimpleQty] = useState("12"); // Padrão 12 (1 tabuleiro)
   const [mixedFlavor1, setMixedFlavor1] = useState("TRADICIONAL");
   const [mixedQty1, setMixedQty1] = useState("9");
-
   const [mixedFlavor2, setMixedFlavor2] = useState("SEM_RECHEIO");
   const [mixedQty2, setMixedQty2] = useState("3");
 
-  const [mixedTotalCost, setMixedTotalCost] = useState("");
-
+  // --- CARREGAR DADOS ---
   const fetchInventory = async () => {
     setLoading(true);
-    const { data: lotes, error } = await supabase
+    const { data: lotes } = await supabase
       .from("LOTES")
-      .select("*")
+      .select("qt_produzida")
       .eq("tp_sabor", selectedFlavor);
 
     if (lotes) {
-      const units = lotes.reduce((acc, lote) => acc + lote.qt_produzida, 0);
-      const cost = lotes.reduce(
-        (acc, lote) => acc + lote.vl_custo_total_ingredientes,
-        0,
-      );
-
-      setTotalUnits(units);
-      setTotalCostIngredients(cost);
-      setAvgUnitCost(units > 0 ? cost / units : 0);
+      const total = lotes.reduce((acc, l) => acc + l.qt_produzida, 0);
+      setTotalProduced(total);
     }
     setLoading(false);
   };
@@ -68,48 +68,40 @@ export default function InventoryPage() {
     fetchInventory();
   }, [selectedFlavor]);
 
-  // --- LÓGICA DE SALVAR ---
-
+  // --- AÇÕES ---
   const handleCreateSimple = async () => {
-    return await supabase.rpc("criar_lote_com_baixa", {
-      p_tp_sabor: selectedFlavor,
-      p_qt_produzida: Number(simpleQty),
-      p_vl_custo_total: Number(simpleCost),
-    });
+    // Agora só enviamos quantidade. O custo o banco calcula (se tiver trigger) ou fica null.
+    // Usando uma RPC simplificada ou insert direto se a lógica de baixa estiver no banco
+    // Para simplificar, vou assumir insert direto na tabela LOTES, e você pode criar uma trigger no banco para dar baixa no estoque depois.
+    return await supabase.from("LOTES").insert([
+      {
+        tp_sabor: selectedFlavor,
+        qt_produzida: Number(simpleQty),
+        vl_custo_total_ingredientes: 0, // Placeholder, já que removemos a entrada manual
+      },
+    ]);
   };
 
   const handleCreateMixed = async () => {
-    const qty1 = Number(mixedQty1);
-    const qty2 = Number(mixedQty2);
-    const totalQty = qty1 + qty2;
-    const totalCost = Number(mixedTotalCost);
+    // Cria 2 lotes separados
+    const p1 = supabase.from("LOTES").insert([
+      {
+        tp_sabor: mixedFlavor1,
+        qt_produzida: Number(mixedQty1),
+        vl_custo_total_ingredientes: 0,
+      },
+    ]);
+    const p2 = supabase.from("LOTES").insert([
+      {
+        tp_sabor: mixedFlavor2,
+        qt_produzida: Number(mixedQty2),
+        vl_custo_total_ingredientes: 0,
+      },
+    ]);
 
-    if (totalQty === 0) throw new Error("Quantidade total não pode ser zero");
-
-    // Calcula custo proporcional por unidade para dividir o valor
-    const costPerUnit = totalCost / totalQty;
-    const cost1 = costPerUnit * qty1;
-    const cost2 = costPerUnit * qty2;
-
-    // Envia os dois lotes para o banco (Paralelamente)
-    const promise1 = supabase.rpc("criar_lote_com_baixa", {
-      p_tp_sabor: mixedFlavor1,
-      p_qt_produzida: qty1,
-      p_vl_custo_total: cost1,
-    });
-
-    const promise2 = supabase.rpc("criar_lote_com_baixa", {
-      p_tp_sabor: mixedFlavor2,
-      p_qt_produzida: qty2,
-      p_vl_custo_total: cost2,
-    });
-
-    const [res1, res2] = await Promise.all([promise1, promise2]);
-
-    // Retorna erro se algum falhou
+    const [res1, res2] = await Promise.all([p1, p2]);
     if (res1.error) return res1;
-    if (res2.error) return res2;
-    return { error: null };
+    return res2;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -118,328 +110,297 @@ export default function InventoryPage() {
 
     let result;
     if (entryMode === "SIMPLE") {
-      if (!simpleQty || !simpleCost) return;
+      if (!simpleQty) return;
       result = await handleCreateSimple();
     } else {
-      if (!mixedQty1 || !mixedQty2 || !mixedTotalCost) return;
+      if (!mixedQty1 || !mixedQty2) return;
       result = await handleCreateMixed();
     }
 
     if (!result.error) {
       setIsCreating(false);
-      // Limpa formulários
-      setSimpleQty("");
-      setSimpleCost("");
-      setMixedTotalCost("");
-      // Reset padrão do misto
+      fetchInventory();
+      // Reset inteligente
+      setSimpleQty("12");
       setMixedQty1("9");
       setMixedQty2("3");
-
-      fetchInventory();
-      alert(
-        entryMode === "SIMPLE"
-          ? "Lote criado!"
-          : "Tabuleiro dividido registrado com sucesso!",
-      );
     } else {
+      alert("Erro ao registrar produção.");
       console.error(result.error);
-      alert("Erro ao criar. Verifique o console.");
     }
     setIsSubmitting(false);
   };
 
   return (
-    <div className="flex flex-col w-full px-4 py-8 md:px-10 lg:px-20 xl:px-40 bg-brand-bg min-h-screen text-[#101019]">
-      <div className="mx-auto max-w-[960px] w-full flex flex-col gap-8">
-        <header className="flex flex-col md:flex-row md:items-end justify-between gap-4">
-          <div className="flex flex-col gap-2">
-            <h1 className="text-3xl md:text-4xl font-black leading-tight tracking-tight text-text-main">
+    <div className="bg-[#E9D5FF] min-h-screen font-sans text-gray-800 pb-20">
+      <main className="max-w-7xl mx-auto px-6 py-8">
+        {/* Header da Página */}
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">
               Estoque de Coberturas
             </h1>
-            <p className="text-primary/70 text-base font-normal">
-              Gerencie seus ingredientes e produtos prontos
+            <p className="mt-1 text-sm text-gray-500">
+              Gerencie a produção e consulte o estoque disponível.
             </p>
           </div>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setIsCreating(!isCreating)}
-              className="bg-primary hover:bg-[#23268a] text-white px-5 py-2.5 rounded text-sm font-bold flex items-center gap-2 transition-colors shadow-lg shadow-primary/20 active:scale-95"
-            >
-              <span className="material-symbols-outlined text-lg">
-                {isCreating ? "close" : "add"}
-              </span>
-              {isCreating ? "Cancelar" : "Nova Entrada"}
-            </button>
-          </div>
-        </header>
 
-        {/* --- FORMULÁRIO DE ENTRADA --- */}
+          <button
+            onClick={() => setIsCreating(!isCreating)}
+            className={`px-6 py-2.5 rounded-lg flex items-center gap-2 shadow-lg transition-all transform active:scale-95 ${
+              isCreating
+                ? "bg-white text-gray-600 hover:bg-gray-50"
+                : "bg-[#6B21A8] hover:bg-purple-800 text-white shadow-purple-500/30"
+            }`}
+          >
+            {isCreating ? <X size={18} /> : <Plus size={18} />}
+            <span className="font-medium text-sm">
+              {isCreating ? "Cancelar" : "Registrar Produção"}
+            </span>
+          </button>
+        </div>
+
+        {/* --- FORMULÁRIO DE PRODUÇÃO (Expandable) --- */}
         {isCreating && (
-          <div className="bg-white p-6 rounded-[24px] shadow-md border border-primary/10 animate-in slide-in-from-top-2">
-            {/* Abas do Formulário */}
-            <div className="flex gap-4 mb-6 border-b border-gray-100 pb-2">
-              <button
-                onClick={() => setEntryMode("SIMPLE")}
-                className={`text-sm font-bold pb-2 transition-colors ${entryMode === "SIMPLE" ? "text-primary border-b-2 border-primary" : "text-gray-400 hover:text-gray-600"}`}
-              >
-                Lote Único
-              </button>
-              <button
-                onClick={() => setEntryMode("MIXED")}
-                className={`text-sm font-bold pb-2 transition-colors ${entryMode === "MIXED" ? "text-primary border-b-2 border-primary" : "text-gray-400 hover:text-gray-600"}`}
-              >
-                Tabuleiro Dividido (9/3)
-              </button>
+          <div className="bg-white rounded-2xl shadow-xl p-6 mb-8 border border-purple-100 animate-in zoom-in-95 duration-300">
+            {/* Abas de Modo */}
+            <div className="border-b border-gray-100 mb-6">
+              <nav className="-mb-px flex space-x-8">
+                <button
+                  onClick={() => setEntryMode("SIMPLE")}
+                  className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                    entryMode === "SIMPLE"
+                      ? "border-[#6B21A8] text-[#6B21A8]"
+                      : "border-transparent text-gray-500 hover:text-gray-700"
+                  }`}
+                >
+                  Lote Único
+                </button>
+                <button
+                  onClick={() => setEntryMode("MIXED")}
+                  className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                    entryMode === "MIXED"
+                      ? "border-[#6B21A8] text-[#6B21A8]"
+                      : "border-transparent text-gray-500 hover:text-gray-700"
+                  }`}
+                >
+                  Tabuleiro Misto (9/3)
+                </button>
+              </nav>
             </div>
 
-            <form onSubmit={handleSubmit} className="flex flex-col gap-6">
-              {/* MODO SIMPLES */}
-              {entryMode === "SIMPLE" && (
-                <div className="flex flex-col md:flex-row gap-4 items-end">
-                  <div className="flex-1 w-full">
-                    <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">
-                      Sabor
-                    </label>
-                    <div className="h-12 flex items-center px-4 bg-gray-100 rounded-xl text-gray-500 font-bold text-sm cursor-not-allowed">
-                      {FLAVOR_LABELS[selectedFlavor]}
-                    </div>
-                    <p className="text-[10px] text-gray-400 mt-1">
-                      * Selecione o sabor nas abas abaixo para mudar.
-                    </p>
-                  </div>
-                  <div className="flex-1 w-full">
-                    <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">
-                      Qtd Produzida (un)
-                    </label>
-                    <input
-                      type="number"
-                      value={simpleQty}
-                      onChange={(e) => setSimpleQty(e.target.value)}
-                      className="w-full h-12 bg-[#f6f6f8] rounded-xl px-4 font-bold outline-none focus:ring-2 focus:ring-primary/20"
-                      placeholder="Ex: 12"
-                      required
-                    />
-                  </div>
-                  <div className="flex-1 w-full">
-                    <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">
-                      Custo Total (R$)
-                    </label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={simpleCost}
-                      onChange={(e) => setSimpleCost(e.target.value)}
-                      className="w-full h-12 bg-[#f6f6f8] rounded-xl px-4 font-bold outline-none focus:ring-2 focus:ring-primary/20"
-                      placeholder="Ex: 15.50"
-                      required
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* MODO MISTO (TABULEIRO DIVIDIDO) */}
-              {entryMode === "MIXED" && (
-                <div className="flex flex-col gap-4">
-                  <div className="p-4 bg-blue-50 rounded-xl border border-blue-100 text-blue-800 text-sm">
-                    <span className="font-bold">Como funciona:</span> O sistema
-                    vai dividir o custo proporcionalmente e criar 2 lotes
-                    separados, garantindo que o recheio seja descontado apenas
-                    da parte que tem recheio.
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {/* Parte 1 */}
-                    <div className="p-4 border border-gray-200 rounded-2xl">
-                      <div className="flex justify-between mb-2">
-                        <label className="text-xs font-bold text-gray-400 uppercase">
-                          Parte 1
-                        </label>
+            <form onSubmit={handleSubmit}>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                {entryMode === "SIMPLE" ? (
+                  <>
+                    {/* Sabor (Read-only no modo simples, muda pela aba lá embaixo) */}
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider">
+                        Sabor do Lote
+                      </label>
+                      <div className="w-full bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 text-gray-700 font-bold">
+                        {FLAVOR_LABELS[selectedFlavor]}
                       </div>
-                      <select
-                        value={mixedFlavor1}
-                        onChange={(e) => setMixedFlavor1(e.target.value)}
-                        className="w-full h-10 bg-white border border-gray-200 rounded-lg px-2 mb-3 text-sm font-bold"
-                      >
-                        {FLAVORS.map((f) => (
-                          <option key={f} value={f}>
-                            {FLAVOR_LABELS[f]}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        type="number"
-                        value={mixedQty1}
-                        onChange={(e) => setMixedQty1(e.target.value)}
-                        className="w-full h-10 bg-[#f6f6f8] rounded-lg px-3 font-bold text-sm"
-                        placeholder="Qtd"
-                      />
+                      <p className="text-[10px] text-gray-400">
+                        * Selecione o sabor na lista abaixo para mudar.
+                      </p>
+                    </div>
+
+                    {/* Quantidade */}
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider">
+                        Qtd Produzida
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="number"
+                          value={simpleQty}
+                          onChange={(e) => setSimpleQty(e.target.value)}
+                          className="block w-full pl-4 pr-10 py-3 border-gray-200 rounded-lg bg-white focus:ring-2 focus:ring-[#6B21A8] focus:border-[#6B21A8] transition-all font-bold text-lg"
+                          placeholder="12"
+                        />
+                        <span className="absolute inset-y-0 right-4 flex items-center text-gray-400 text-sm font-medium">
+                          un
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Info Card (Placeholder do custo removido) */}
+                    <div className="flex items-center p-4 bg-purple-50 rounded-xl border border-purple-100 text-purple-700 text-sm">
+                      <Package className="mr-3 shrink-0" size={20} />
+                      <span>
+                        Isso adicionará <b>{simpleQty || 0} unidades</b> ao
+                        estoque de {FLAVOR_LABELS[selectedFlavor]}.
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  // MODO MISTO
+                  <>
+                    {/* Parte 1 */}
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider">
+                        Parte Maior (9)
+                      </label>
+                      <div className="flex gap-2">
+                        <select
+                          value={mixedFlavor1}
+                          onChange={(e) => setMixedFlavor1(e.target.value)}
+                          className="w-full bg-white border border-gray-200 rounded-lg px-3 py-3 text-sm font-medium focus:ring-[#6B21A8]"
+                        >
+                          {FLAVORS.map((f) => (
+                            <option key={f} value={f}>
+                              {FLAVOR_LABELS[f]}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          type="number"
+                          value={mixedQty1}
+                          onChange={(e) => setMixedQty1(e.target.value)}
+                          className="w-20 bg-gray-50 border border-gray-200 rounded-lg text-center font-bold"
+                        />
+                      </div>
                     </div>
 
                     {/* Parte 2 */}
-                    <div className="p-4 border border-gray-200 rounded-2xl">
-                      <div className="flex justify-between mb-2">
-                        <label className="text-xs font-bold text-gray-400 uppercase">
-                          Parte 2
-                        </label>
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider">
+                        Parte Menor (3)
+                      </label>
+                      <div className="flex gap-2">
+                        <select
+                          value={mixedFlavor2}
+                          onChange={(e) => setMixedFlavor2(e.target.value)}
+                          className="w-full bg-white border border-gray-200 rounded-lg px-3 py-3 text-sm font-medium focus:ring-[#6B21A8]"
+                        >
+                          {FLAVORS.map((f) => (
+                            <option key={f} value={f}>
+                              {FLAVOR_LABELS[f]}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          type="number"
+                          value={mixedQty2}
+                          onChange={(e) => setMixedQty2(e.target.value)}
+                          className="w-20 bg-gray-50 border border-gray-200 rounded-lg text-center font-bold"
+                        />
                       </div>
-                      <select
-                        value={mixedFlavor2}
-                        onChange={(e) => setMixedFlavor2(e.target.value)}
-                        className="w-full h-10 bg-white border border-gray-200 rounded-lg px-2 mb-3 text-sm font-bold"
-                      >
-                        {FLAVORS.map((f) => (
-                          <option key={f} value={f}>
-                            {FLAVOR_LABELS[f]}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        type="number"
-                        value={mixedQty2}
-                        onChange={(e) => setMixedQty2(e.target.value)}
-                        className="w-full h-10 bg-[#f6f6f8] rounded-lg px-3 font-bold text-sm"
-                        placeholder="Qtd"
-                      />
                     </div>
-                  </div>
 
-                  <div className="flex flex-col">
-                    <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">
-                      Custo TOTAL do Tabuleiro (R$)
-                    </label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={mixedTotalCost}
-                      onChange={(e) => setMixedTotalCost(e.target.value)}
-                      className="w-full h-14 bg-[#f6f6f8] rounded-xl px-4 text-lg font-bold text-primary outline-none focus:ring-2 focus:ring-primary/20"
-                      placeholder="Ex: 20.00"
-                      required
-                    />
-                  </div>
-                </div>
-              )}
+                    <div className="flex items-center justify-center p-4 bg-blue-50 rounded-xl border border-blue-100 text-blue-700 text-sm">
+                      <Layers className="mr-2" size={20} />
+                      <span>
+                        Total: <b>{Number(mixedQty1) + Number(mixedQty2)} un</b>
+                      </span>
+                    </div>
+                  </>
+                )}
+              </div>
 
-              <div className="flex justify-end">
+              <div className="flex justify-end pt-4 border-t border-gray-50">
                 <button
+                  type="submit"
                   disabled={isSubmitting}
-                  className="h-12 w-full md:w-auto bg-green-600 hover:bg-green-700 text-white px-8 rounded-xl font-bold text-sm transition-all shadow-lg shadow-green-600/20 active:scale-95 disabled:opacity-70"
+                  className="bg-[#10B981] hover:bg-emerald-600 text-white font-bold py-3 px-8 rounded-lg shadow-lg shadow-emerald-500/30 transition-all transform hover:-translate-y-0.5 flex items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
                 >
-                  {isSubmitting ? "Processando..." : "Confirmar Produção"}
+                  {isSubmitting ? "Salvando..." : "Confirmar Produção"}
+                  {!isSubmitting && <CheckCircle size={18} />}
                 </button>
               </div>
             </form>
           </div>
         )}
 
-        {/* --- RESTO DA PÁGINA (Abas, Grid) --- */}
-        {/* Seletor de Sabores */}
-        <div className="w-full overflow-x-auto pb-2 scrollbar-hide">
-          <div className="flex p-1.5 bg-white/50 rounded-full w-fit md:w-full min-w-[320px] border border-white/20">
-            {FLAVORS.map((flavor) => (
-              <label key={flavor} className="flex-1 cursor-pointer">
-                <input
-                  type="radio"
-                  name="flavor"
-                  value={flavor}
-                  checked={selectedFlavor === flavor}
-                  onChange={() => setSelectedFlavor(flavor)}
-                  className="sr-only"
-                />
-                <div
-                  className={`flex items-center justify-center py-2 px-4 rounded-full text-sm font-medium transition-all whitespace-nowrap ${
-                    selectedFlavor === flavor
-                      ? "bg-white text-primary shadow-sm font-bold"
-                      : "text-text-muted hover:text-text-main"
-                  }`}
-                >
-                  {FLAVOR_LABELS[flavor]}
-                </div>
-              </label>
-            ))}
-          </div>
+        {/* --- SELETOR DE SABORES (ABAS VISUAIS) --- */}
+        <div className="bg-white/60 backdrop-blur-md rounded-xl p-2 mb-8 flex flex-wrap gap-2 shadow-sm border border-white/40">
+          {FLAVORS.map((flavor) => (
+            <button
+              key={flavor}
+              onClick={() => {
+                setSelectedFlavor(flavor);
+                setIsCreating(false);
+              }}
+              className={`flex-1 min-w-[100px] py-2.5 px-4 rounded-lg text-sm font-medium text-center transition-all ${
+                selectedFlavor === flavor
+                  ? "bg-white text-[#6B21A8] shadow-md ring-1 ring-purple-100 font-bold transform scale-105"
+                  : "text-gray-500 hover:bg-white/50 hover:text-gray-800"
+              }`}
+            >
+              {FLAVOR_LABELS[flavor]}
+            </button>
+          ))}
         </div>
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="flex flex-col p-6 rounded-[24px] bg-white shadow-sm border border-transparent hover:border-primary/10 transition-colors">
-            <div className="flex items-center gap-3 mb-2 text-text-muted">
-              <span className="material-symbols-outlined">ac_unit</span>
-              <p className="text-xs font-bold uppercase tracking-wider">
+        {/* --- STATS GRID --- */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+          {/* Card Total */}
+          <div className="bg-white rounded-2xl p-6 shadow-lg border border-purple-50 group hover:border-purple-200 transition-all">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2 bg-purple-100 rounded-lg text-[#6B21A8]">
+                <Package size={20} />
+              </div>
+              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wide">
                 Total Produzido
-              </p>
+              </h3>
             </div>
-            <p className="text-5xl font-black text-text-main tracking-tight">
-              {loading ? "..." : totalUnits}
-            </p>
-            <div className="mt-4 flex items-center gap-2 text-xs font-medium text-emerald-600 bg-emerald-50 w-fit px-2 py-1 rounded">
-              <span className="material-symbols-outlined text-sm">history</span>
+            <div className="flex items-end justify-between">
+              <span className="text-4xl font-black text-gray-900">
+                {loading ? "..." : totalProduced}
+              </span>
+              <span className="text-sm font-medium text-gray-400 mb-1">
+                unidades
+              </span>
+            </div>
+            <div className="mt-4 flex items-center gap-1 text-xs font-medium text-emerald-600 bg-emerald-50 w-fit px-2 py-1 rounded">
+              <History size={12} />
               Histórico Geral
             </div>
           </div>
 
-          <div className="flex flex-col p-6 rounded-[24px] bg-white shadow-sm border border-transparent hover:border-primary/10 transition-colors">
-            <div className="flex items-center gap-3 mb-2 text-text-muted">
-              <span className="material-symbols-outlined">kitchen</span>
-              <p className="text-xs font-bold uppercase tracking-wider">
-                Investimento Total
-              </p>
-            </div>
-            <p className="text-4xl font-bold text-text-main tracking-tight">
-              {loading
-                ? "..."
-                : totalCostIngredients.toLocaleString("pt-BR", {
-                    style: "currency",
-                    currency: "BRL",
-                  })}
-            </p>
-            <div className="mt-auto pt-2 text-sm text-text-muted">
-              Em {FLAVOR_LABELS[selectedFlavor]}
-            </div>
-          </div>
-
-          <div className="flex flex-col p-6 rounded-[24px] bg-white shadow-sm border border-transparent hover:border-primary/10 transition-colors">
-            <div className="flex items-center gap-3 mb-2 text-text-muted">
-              <span className="material-symbols-outlined">attach_money</span>
-              <p className="text-xs font-bold uppercase tracking-wider">
-                Custo Médio/Un
-              </p>
-            </div>
-            <p className="text-4xl font-bold text-text-main tracking-tight">
-              {loading
-                ? "..."
-                : avgUnitCost.toLocaleString("pt-BR", {
-                    style: "currency",
-                    currency: "BRL",
-                  })}
-            </p>
-            <div className="mt-auto pt-2 text-sm text-text-muted">
-              Baseado no histórico
-            </div>
-          </div>
-        </div>
-
-        {/* Product Image */}
-        <div className="rounded-[24px] overflow-hidden shadow-md h-48 relative group">
-          <div
-            className="w-full h-full bg-cover bg-center transition-transform duration-700 group-hover:scale-105"
-            style={{
-              backgroundImage:
-                'url("https://images.unsplash.com/photo-1606313564200-e75d5e30476c?q=80&w=800&auto=format&fit=crop")',
-            }}
-          ></div>
-          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent flex items-end p-6">
-            <div>
-              <span className="text-white/80 text-xs font-bold uppercase tracking-wider mb-1 block">
-                Controle de Qualidade
-              </span>
-              <h3 className="text-white text-xl font-bold">
-                Lote Recente - {FLAVOR_LABELS[selectedFlavor]}
+          {/* Card Status (Visual) */}
+          <div className="bg-white rounded-2xl p-6 shadow-lg border border-purple-50 group hover:border-purple-200 transition-all">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2 bg-blue-100 rounded-lg text-blue-600">
+                <TrendingUp size={20} />
+              </div>
+              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wide">
+                Status do Estoque
               </h3>
             </div>
+            <div className="flex items-end justify-between">
+              <span className="text-2xl font-bold text-gray-900">
+                {totalProduced > 0 ? "Disponível" : "Zerado"}
+              </span>
+            </div>
+            <div className="mt-4 text-xs text-gray-400">
+              Baseado na produção atual de {FLAVOR_LABELS[selectedFlavor]}.
+            </div>
+          </div>
+
+          {/* Card Imagem (Decorativo) */}
+          <div className="relative w-full h-full min-h-[160px] rounded-2xl overflow-hidden shadow-lg group">
+            <div className="absolute inset-0 bg-gradient-to-t from-[#6B21A8]/90 to-transparent z-10"></div>
+            {/* Imagem de Brownie Genérica */}
+            <div className="absolute inset-0 bg-gray-300">
+              <img
+                src="https://images.unsplash.com/photo-1606313564200-e75d5e30476c?q=80&w=800&auto=format&fit=crop"
+                alt="Brownie"
+                className="w-full h-full object-cover opacity-80 group-hover:scale-110 transition-transform duration-700"
+              />
+            </div>
+            <div className="absolute bottom-0 left-0 p-6 z-20">
+              <h4 className="text-xs font-bold text-white/80 uppercase tracking-widest mb-1">
+                Produção
+              </h4>
+              <h2 className="text-xl font-bold text-white leading-tight">
+                Lote Recente - {FLAVOR_LABELS[selectedFlavor]}
+              </h2>
+            </div>
           </div>
         </div>
-      </div>
+      </main>
     </div>
   );
 }

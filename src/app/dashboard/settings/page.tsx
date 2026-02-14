@@ -1,8 +1,21 @@
 "use client";
 
 import { supabase } from "@/lib/supabase";
+import {
+  Check,
+  Cookie,
+  Droplet,
+  Egg,
+  Loader2,
+  Menu,
+  Package,
+  Plus,
+  Save,
+  Trash2,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 
+// --- CONSTANTES ---
 const FLAVORS = [
   "TRADICIONAL",
   "NINHO",
@@ -12,7 +25,6 @@ const FLAVORS = [
   "SEM_RECHEIO",
 ];
 
-// Mapeamento para nomes bonitos
 const FLAVOR_LABELS: Record<string, string> = {
   TRADICIONAL: "Tradicional",
   NINHO: "Ninho",
@@ -23,242 +35,251 @@ const FLAVOR_LABELS: Record<string, string> = {
 };
 
 export default function SettingsPage() {
-  // Estados Gerais
-  const [prices, setPrices] = useState<Record<string, number>>({}); // Armazena preços de todos os sabores
+  // --- STATES ---
   const [loadingPrices, setLoadingPrices] = useState(true);
+  const [prices, setPrices] = useState<Record<string, number>>({});
+  const [savingPrice, setSavingPrice] = useState<string | null>(null); // Qual sabor está salvando
 
-  // Estados da Receita (Mantido igual)
+  // Receita
   const [selectedFlavor, setSelectedFlavor] = useState("TRADICIONAL");
   const [materials, setMaterials] = useState<any[]>([]);
   const [recipeItems, setRecipeItems] = useState<any[]>([]);
+
+  // Form Ingrediente
   const [selectedMaterialId, setSelectedMaterialId] = useState("");
   const [amountInput, setAmountInput] = useState("");
   const [selectedUnit, setSelectedUnit] = useState("");
   const [recipeYield, setRecipeYield] = useState(12);
+  const [addingItem, setAddingItem] = useState(false);
 
-  // --- CARREGAMENTO DE DADOS ---
-
-  // 1. Carregar TODOS os preços de uma vez
-  const fetchPrices = async () => {
-    setLoadingPrices(true);
-    const { data } = await supabase.from("TABELA_PRECOS").select("*");
-
-    if (data) {
-      const pricesMap: Record<string, number> = {};
-      data.forEach((item: any) => {
-        pricesMap[item.tp_sabor] = item.vl_preco;
-      });
-      setPrices(pricesMap);
-    }
-    setLoadingPrices(false);
-  };
-
-  // 2. Carregar Materiais (para o select)
+  // --- CARREGAMENTO INICIAL ---
   useEffect(() => {
-    const loadMaterials = async () => {
-      const { data } = await supabase
+    const fetchData = async () => {
+      setLoadingPrices(true);
+
+      // 1. Preços
+      const { data: pricesData } = await supabase
+        .from("TABELA_PRECOS")
+        .select("*");
+      if (pricesData) {
+        const pricesMap: Record<string, number> = {};
+        pricesData.forEach(
+          (item: any) => (pricesMap[item.tp_sabor] = item.vl_preco),
+        );
+        setPrices(pricesMap);
+      }
+
+      // 2. Materiais
+      const { data: matData } = await supabase
         .from("MATERIAS_PRIMAS")
         .select("*")
         .order("nm_item");
-      if (data) setMaterials(data);
+      if (matData) setMaterials(matData);
+
+      setLoadingPrices(false);
     };
-    loadMaterials();
-    fetchPrices();
+    fetchData();
   }, []);
 
-  // 3. Carregar Receita quando troca a aba
+  // Carregar Receita ao trocar aba
   useEffect(() => {
     const fetchRecipe = async () => {
       const { data } = await supabase
         .from("FICHA_TECNICA")
         .select(`*, MATERIAS_PRIMAS ( nm_item, ds_unidade_medida )`)
         .eq("tp_sabor", selectedFlavor);
-
       if (data) setRecipeItems(data);
     };
     fetchRecipe();
   }, [selectedFlavor]);
 
-  // --- FUNÇÕES DE PREÇO ---
-
-  // Atualiza o estado local enquanto você digita
+  // --- AÇÕES DE PREÇO ---
   const handlePriceChange = (flavor: string, newVal: string) => {
-    setPrices((prev) => ({
-      ...prev,
-      [flavor]: Number(newVal),
-    }));
+    setPrices((prev) => ({ ...prev, [flavor]: parseFloat(newVal) || 0 }));
   };
 
-  // Salva no banco quando clica no botão
   const savePrice = async (flavor: string) => {
+    setSavingPrice(flavor);
     const priceToSave = prices[flavor] || 0;
 
-    const { error } = await supabase
+    await supabase
       .from("TABELA_PRECOS")
       .upsert({ tp_sabor: flavor, vl_preco: priceToSave });
 
-    if (!error) {
-      alert(
-        `Preço do ${FLAVOR_LABELS[flavor]} atualizado para R$ ${priceToSave.toFixed(2)}`,
-      );
-    } else {
-      console.error(error);
-      alert("Erro ao salvar.");
-    }
+    // Pequeno delay visual para feedback
+    setTimeout(() => setSavingPrice(null), 1000);
   };
 
-  // --- FUNÇÕES DA RECEITA (Mantidas) ---
-
+  // --- AÇÕES DE RECEITA ---
   const handleMaterialChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const id = e.target.value;
     setSelectedMaterialId(id);
-    const material = materials.find((m) => m.cd_materia === id);
+    const material = materials.find((m) => m.cd_materia == id); // == para aceitar string/number
     setSelectedUnit(material ? material.ds_unidade_medida : "");
   };
 
-  const getInputUnitLabel = (dbUnit: string) => {
-    if (dbUnit === "kg") return "g (gramas)";
-    if (dbUnit === "L" || dbUnit === "l") return "ml (mililitros)";
-    return dbUnit;
-  };
-
-  const calculateValueToSave = (
-    val: number,
-    dbUnit: string,
-    yieldQty: number,
-  ) => {
-    let value = val;
-    if (dbUnit === "kg" || dbUnit === "L" || dbUnit === "l")
-      value = value / 1000;
-    return value / yieldQty;
-  };
-
-  const formatDisplayValue = (
-    valUnitario: number,
-    dbUnit: string,
-    yieldQty: number,
-  ) => {
-    const value = valUnitario * yieldQty;
-    if (dbUnit === "kg") return `${Math.round(value * 1000)} g`;
-    if (dbUnit === "L" || dbUnit === "l")
-      return `${Math.round(value * 1000)} ml`;
-    return `${Number(value.toFixed(2))} ${dbUnit}`;
-  };
-
-  const handleAddToRecipe = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleAddIngredient = async () => {
     if (!selectedMaterialId || !amountInput) return;
-    const finalValue = calculateValueToSave(
-      Number(amountInput),
-      selectedUnit,
-      recipeYield,
-    );
+    setAddingItem(true);
+
+    // Lógica de conversão (salva unitário no banco)
+    // Se a unidade for KG/L, o usuário digita gramas/ml, mas salvamos a fração de KG
+    // Ex: 140g -> 0.140 kg -> divide por 12 (rendimento) = 0.0116 kg/unidade
+
+    let rawValue = parseFloat(amountInput);
+    if (
+      selectedUnit.toLowerCase() === "kg" ||
+      selectedUnit.toLowerCase() === "l"
+    ) {
+      // Assume que o usuário digitou gramas/ml se a unidade base for grande
+      // Mas vamos simplificar: O usuário digita na unidade base?
+      // Vamos assumir que ele digita na unidade de MEDIDA COMUM (gramas)
+      rawValue = rawValue / 1000;
+    }
+
+    const valuePerUnit = rawValue / recipeYield;
+
     const { error } = await supabase.from("FICHA_TECNICA").insert([
       {
         tp_sabor: selectedFlavor,
         cd_materia: selectedMaterialId,
-        qt_uso_por_unidade: finalValue,
+        qt_uso_por_unidade: valuePerUnit,
       },
     ]);
+
     if (!error) {
       setAmountInput("");
+      // Recarrega lista
       const { data } = await supabase
         .from("FICHA_TECNICA")
         .select(`*, MATERIAS_PRIMAS ( nm_item, ds_unidade_medida )`)
         .eq("tp_sabor", selectedFlavor);
       if (data) setRecipeItems(data);
-    } else {
-      alert("Erro ao adicionar.");
     }
+    setAddingItem(false);
   };
 
-  const handleRemoveItem = async (id: string) => {
-    await supabase.from("FICHA_TECNICA").delete().eq("cd_ficha", id);
+  const handleRemoveItem = async (id: number) => {
+    // Atualização otimista
     setRecipeItems((prev) => prev.filter((i) => i.cd_ficha !== id));
+    await supabase.from("FICHA_TECNICA").delete().eq("cd_ficha", id);
+  };
+
+  // Helper para exibir valor total da receita (Unitário * Rendimento)
+  const formatRecipeValue = (valUnit: number, unit: string) => {
+    let total = valUnit * recipeYield;
+    let label = unit;
+
+    if (unit === "kg" && total < 1) {
+      total *= 1000;
+      label = "g";
+    }
+    if ((unit === "l" || unit === "L") && total < 1) {
+      total *= 1000;
+      label = "ml";
+    }
+
+    return `${parseFloat(total.toFixed(2))} ${label}`;
+  };
+
+  const getIconForMaterial = (name: string) => {
+    const n = name.toLowerCase();
+    if (n.includes("ovo")) return <Egg size={20} />;
+    if (n.includes("leite") || n.includes("oleo") || n.includes("agua"))
+      return <Droplet size={20} />;
+    if (n.includes("embalagem")) return <Package size={20} />;
+    return <Cookie size={20} />;
   };
 
   return (
-    <div className="flex flex-col w-full px-4 py-8 md:px-10 lg:px-20 xl:px-40 bg-brand-bg min-h-screen text-[#101019]">
-      <div className="mx-auto max-w-[960px] w-full flex flex-col gap-10">
-        <header>
-          <h1 className="text-3xl md:text-4xl font-black leading-tight tracking-tight">
+    <div className="bg-[#E9D5FF] min-h-screen font-sans text-gray-800 pb-20">
+      <main className="max-w-7xl mx-auto px-6 py-10">
+        {/* Header */}
+        <header className="mb-10 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <h1 className="text-3xl font-extrabold text-gray-900 mb-2 tracking-tight">
             Configuração Geral
           </h1>
-          <p className="text-primary/70 text-base font-normal">
-            Gerencie preços de venda e fichas técnicas.
+          <p className="text-gray-500">
+            Gerencie preços de venda e fichas técnicas dos seus produtos.
           </p>
         </header>
 
-        {/* --- SEÇÃO 1: TABELA DE PREÇOS (EDITÁVEL) --- */}
-        <section className="bg-white p-6 md:p-8 rounded-[24px] shadow-sm border border-white/40">
+        {/* --- SEÇÃO 1: PREÇOS --- */}
+        <section className="bg-white rounded-2xl p-6 md:p-8 shadow-sm mb-10 border border-purple-50">
           <div className="flex items-center gap-3 mb-6">
-            <span className="material-symbols-outlined text-primary text-3xl">
-              payments
-            </span>
-            <h2 className="text-2xl font-bold text-text-main">
+            <div className="p-2 bg-purple-100 rounded-lg text-[#7C3AED]">
+              <Save size={20} />
+            </div>
+            <h2 className="text-xl font-bold text-gray-900">
               Tabela de Preços
             </h2>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {FLAVORS.map((flavor) => (
               <div
                 key={flavor}
-                className="flex items-center justify-between p-3 bg-[#f6f6f8] rounded-xl border border-transparent hover:border-primary/20 transition-all"
+                className="bg-[#F3F4F6] rounded-xl p-4 flex items-center justify-between border border-transparent hover:border-purple-200 transition-all group"
               >
-                <div className="flex flex-col">
-                  <span className="text-xs font-bold text-gray-400 uppercase">
+                <div>
+                  <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">
                     {FLAVOR_LABELS[flavor]}
-                  </span>
+                  </p>
                   <div className="flex items-center">
-                    <span className="text-gray-500 font-medium mr-1">R$</span>
+                    <span className="text-gray-400 mr-1 text-sm font-medium">
+                      R$
+                    </span>
                     <input
                       type="number"
-                      step="0.01"
-                      className="bg-transparent font-bold text-lg text-primary w-20 outline-none border-b border-gray-300 focus:border-primary transition-colors"
+                      step="0.50"
                       value={prices[flavor] || ""}
                       onChange={(e) =>
                         handlePriceChange(flavor, e.target.value)
                       }
+                      className="bg-transparent border-none p-0 text-xl font-bold text-gray-800 w-20 focus:ring-0 placeholder-gray-300"
                       placeholder="0.00"
                     />
                   </div>
                 </div>
                 <button
                   onClick={() => savePrice(flavor)}
-                  className="size-10 flex items-center justify-center bg-white text-green-600 rounded-full shadow-sm hover:bg-green-50 active:scale-95 transition-all"
-                  title="Salvar Preço"
+                  disabled={savingPrice === flavor}
+                  className={`w-10 h-10 rounded-full shadow-sm flex items-center justify-center transition-all ${
+                    savingPrice === flavor
+                      ? "bg-green-500 text-white scale-110"
+                      : "bg-white text-green-500 hover:bg-green-50"
+                  }`}
                 >
-                  <span className="material-symbols-outlined">save</span>
+                  {savingPrice === flavor ? (
+                    <Check size={20} />
+                  ) : (
+                    <Save size={20} />
+                  )}
                 </button>
               </div>
             ))}
           </div>
         </section>
 
-        <hr className="border-gray-200" />
-
-        {/* --- SEÇÃO 2: FICHA TÉCNICA (COM ABAS) --- */}
+        {/* --- SEÇÃO 2: FICHA TÉCNICA --- */}
         <section>
           <div className="flex items-center gap-3 mb-6">
-            <span className="material-symbols-outlined text-primary text-3xl">
-              menu_book
-            </span>
-            <h2 className="text-2xl font-bold text-text-main">
-              Fichas Técnicas
-            </h2>
+            <div className="p-2 bg-purple-100 rounded-lg text-[#7C3AED]">
+              <Menu size={20} />
+            </div>
+            <h2 className="text-xl font-bold text-gray-900">Fichas Técnicas</h2>
           </div>
 
-          {/* Seletor de Sabor */}
-          <div className="flex gap-2 overflow-x-auto pb-4 scrollbar-hide">
+          {/* Abas de Sabor */}
+          <div className="flex flex-wrap gap-2 mb-8">
             {FLAVORS.map((flavor) => (
               <button
                 key={flavor}
                 onClick={() => setSelectedFlavor(flavor)}
-                className={`px-6 py-3 rounded-full text-sm font-bold transition-all whitespace-nowrap shadow-sm ${
+                className={`px-5 py-2 rounded-full text-sm font-semibold transition-all ${
                   selectedFlavor === flavor
-                    ? "bg-primary text-white ring-4 ring-primary/10"
-                    : "bg-white text-gray-500 hover:bg-gray-50"
+                    ? "bg-[#7C3AED] text-white shadow-md shadow-purple-300 transform scale-105"
+                    : "bg-white text-gray-600 hover:bg-gray-100"
                 }`}
               >
                 {FLAVOR_LABELS[flavor]}
@@ -266,153 +287,160 @@ export default function SettingsPage() {
             ))}
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-2">
-            {/* Coluna Esquerda: Adicionar Ingrediente */}
-            <div className="md:col-span-1">
-              <div className="bg-white p-6 rounded-[24px] shadow-sm sticky top-24 border border-white/40">
-                <h3 className="font-bold mb-4 text-primary">
-                  Novo Ingrediente
-                </h3>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            {/* Coluna Esquerda: Formulário */}
+            <div className="bg-white rounded-2xl p-6 shadow-sm h-fit sticky top-24 border border-purple-50">
+              <h3 className="text-lg font-bold text-[#7C3AED] mb-6 flex items-center gap-2">
+                <Plus size={20} /> Novo Ingrediente
+              </h3>
 
-                {/* Rendimento */}
-                <div className="mb-4 p-3 bg-blue-50 rounded-xl border border-blue-100">
-                  <label className="text-[10px] font-bold text-blue-500 uppercase">
-                    Rendimento (Tabuleiro)
+              {/* Config Rendimento */}
+              <div className="mb-6 bg-blue-50 border border-blue-100 rounded-xl p-4 flex justify-between items-center">
+                <div>
+                  <label className="block text-xs font-bold text-blue-600 uppercase">
+                    Rendimento Base
                   </label>
-                  <div className="flex items-center gap-2 mt-1">
-                    <input
-                      type="number"
-                      value={recipeYield}
-                      onChange={(e) => setRecipeYield(Number(e.target.value))}
-                      className="w-16 h-8 rounded-lg border-blue-200 text-center font-bold text-blue-700 text-sm"
-                    />
-                    <span className="text-xs text-blue-600 font-medium">
-                      unidades
-                    </span>
-                  </div>
+                  <p className="text-[10px] text-blue-400">Tabuleiro padrão</p>
+                </div>
+                <div className="flex items-center bg-white rounded-lg px-2 border border-blue-200">
+                  <input
+                    type="number"
+                    value={recipeYield}
+                    onChange={(e) => setRecipeYield(Number(e.target.value))}
+                    className="w-12 py-1 text-center font-bold text-blue-700 border-none focus:ring-0 bg-transparent"
+                  />
+                  <span className="text-xs text-blue-500 font-medium pr-1">
+                    un
+                  </span>
+                </div>
+              </div>
+
+              <form className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-2">
+                    Item do Estoque
+                  </label>
+                  <select
+                    value={selectedMaterialId}
+                    onChange={handleMaterialChange}
+                    className="w-full bg-[#F3F4F6] border-none rounded-xl py-3 px-4 text-gray-700 font-medium focus:ring-2 focus:ring-[#7C3AED] transition-all cursor-pointer"
+                  >
+                    <option value="">Selecione...</option>
+                    {materials.map((m) => (
+                      <option key={m.cd_materia} value={m.cd_materia}>
+                        {m.nm_item}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
-                <form
-                  onSubmit={handleAddToRecipe}
-                  className="flex flex-col gap-4"
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-2">
+                    Qtd Total ({recipeYield} Brownies)
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      value={amountInput}
+                      onChange={(e) => setAmountInput(e.target.value)}
+                      placeholder="Ex: 500"
+                      className="flex-1 bg-[#F3F4F6] border-none rounded-xl py-3 px-4 text-gray-700 font-medium focus:ring-2 focus:ring-[#7C3AED]"
+                    />
+                    <div className="w-20 flex items-center justify-center bg-[#F3F4F6] rounded-xl text-gray-500 text-sm font-bold border border-gray-200 uppercase">
+                      {selectedUnit || "--"}
+                    </div>
+                  </div>
+                  {selectedUnit === "kg" && (
+                    <p className="text-[10px] text-orange-500 mt-1 pl-1">
+                      * Digite em gramas (g)
+                    </p>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleAddIngredient}
+                  disabled={!selectedMaterialId || !amountInput || addingItem}
+                  className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3.5 rounded-xl shadow-md transition-all flex items-center justify-center gap-2 mt-4 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <div>
-                    <label className="text-xs font-bold text-gray-400 uppercase ml-1">
-                      Item
-                    </label>
-                    <div className="relative">
-                      <select
-                        value={selectedMaterialId}
-                        onChange={handleMaterialChange}
-                        className="w-full h-12 bg-[#f6f6f8] rounded-xl px-3 mt-1 cursor-pointer appearance-none outline-none text-sm font-medium"
-                        required
-                      >
-                        <option value="">Selecione...</option>
-                        {materials.map((m) => (
-                          <option key={m.cd_materia} value={m.cd_materia}>
-                            {m.nm_item}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-xs font-bold text-gray-400 uppercase ml-1">
-                      Qtd Total ({recipeYield} brownies)
-                    </label>
-                    <div className="relative mt-1">
-                      <input
-                        type="number"
-                        step="0.0001"
-                        value={amountInput}
-                        onChange={(e) => setAmountInput(e.target.value)}
-                        className="w-full h-12 bg-[#f6f6f8] rounded-xl pl-4 pr-16 outline-none text-sm font-medium"
-                        placeholder="Ex: 4"
-                        required
-                      />
-                      <div className="absolute inset-y-0 right-0 flex items-center px-4 bg-gray-100 rounded-r-xl border-l border-gray-200 text-gray-500 text-xs font-bold">
-                        {selectedUnit ? getInputUnitLabel(selectedUnit) : "--"}
-                      </div>
-                    </div>
-                    {selectedUnit === "kg" && (
-                      <p className="text-[10px] text-orange-500 mt-1 ml-1 font-medium">
-                        * Digite em gramas (g).
-                      </p>
-                    )}
-                  </div>
-                  <button className="h-12 w-full bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold shadow-lg shadow-green-600/20 transition-all active:scale-95">
-                    Adicionar
-                  </button>
-                </form>
-              </div>
+                  {addingItem ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <Plus size={20} />
+                  )}
+                  Adicionar à Receita
+                </button>
+              </form>
             </div>
 
             {/* Coluna Direita: Lista */}
-            <div className="md:col-span-2">
-              <div className="bg-white p-6 rounded-[24px] shadow-sm min-h-[300px] border border-white/40">
-                <div className="flex justify-between items-center mb-6">
-                  <h3 className="font-bold text-lg text-[#101019]">
-                    Receita: {FLAVOR_LABELS[selectedFlavor]}
-                  </h3>
-                  <span className="text-xs bg-gray-100 text-gray-500 px-3 py-1 rounded-full font-bold">
-                    Base: {recipeYield} un
-                  </span>
-                </div>
+            <div className="lg:col-span-2 bg-white rounded-2xl p-6 md:p-8 shadow-sm border border-purple-50 min-h-[400px]">
+              <div className="flex justify-between items-center mb-6 pb-4 border-b border-gray-100">
+                <h3 className="text-xl font-bold text-gray-900">
+                  Receita: {FLAVOR_LABELS[selectedFlavor]}
+                </h3>
+                <span className="bg-gray-100 text-gray-500 px-3 py-1 rounded-lg text-xs font-bold uppercase tracking-wide">
+                  {recipeItems.length} Ingredientes
+                </span>
+              </div>
 
+              <div className="space-y-3">
                 {recipeItems.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-12 text-gray-400 bg-gray-50 rounded-2xl border-2 border-dashed border-gray-100">
-                    <span className="material-symbols-outlined text-4xl mb-2 opacity-50">
-                      receipt_long
-                    </span>
-                    <p>Vazia.</p>
+                  <div className="flex flex-col items-center justify-center py-12 text-gray-300">
+                    <Cookie size={48} className="mb-2 opacity-50" />
+                    <p>Nenhum ingrediente cadastrado.</p>
                   </div>
                 ) : (
-                  <div className="flex flex-col gap-3">
-                    {recipeItems.map((item) => (
-                      <div
-                        key={item.cd_ficha}
-                        className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-100 hover:border-primary/20 transition-all group"
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className="size-10 bg-white rounded-full flex items-center justify-center text-gray-400 shadow-sm group-hover:text-primary transition-colors">
-                            <span className="material-symbols-outlined text-[20px]">
-                              {item.MATERIAS_PRIMAS.ds_unidade_medida === "un"
-                                ? "inventory_2"
-                                : "egg_alt"}
-                            </span>
-                          </div>
-                          <div>
-                            <p className="font-bold text-[#101019]">
-                              {item.MATERIAS_PRIMAS.nm_item}
-                            </p>
-                          </div>
+                  recipeItems.map((item) => (
+                    <div
+                      key={item.cd_ficha}
+                      className="flex items-center justify-between p-4 bg-[#F9FAFB] rounded-xl group hover:shadow-sm hover:bg-white border border-transparent hover:border-purple-100 transition-all"
+                    >
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center text-gray-400 shadow-sm">
+                          {getIconForMaterial(item.MATERIAS_PRIMAS.nm_item)}
                         </div>
-                        <div className="flex items-center gap-6">
-                          <p className="font-bold text-primary text-lg">
-                            {formatDisplayValue(
-                              item.qt_uso_por_unidade,
-                              item.MATERIAS_PRIMAS.ds_unidade_medida,
-                              recipeYield,
-                            )}
-                          </p>
-                          <button
-                            onClick={() => handleRemoveItem(item.cd_ficha)}
-                            className="size-8 flex items-center justify-center rounded-lg text-gray-300 hover:bg-red-50 hover:text-red-500 transition-colors"
-                          >
-                            <span className="material-symbols-outlined text-[18px]">
-                              delete
-                            </span>
-                          </button>
+                        <div>
+                          <span className="font-bold text-gray-800 block">
+                            {item.MATERIAS_PRIMAS.nm_item}
+                          </span>
+                          <span className="text-[10px] text-gray-400 uppercase font-bold">
+                            Por unidade:{" "}
+                            {(
+                              item.qt_uso_por_unidade *
+                              (item.MATERIAS_PRIMAS.ds_unidade_medida === "kg"
+                                ? 1000
+                                : 1)
+                            ).toFixed(2)}{" "}
+                            {item.MATERIAS_PRIMAS.ds_unidade_medida === "kg"
+                              ? "g"
+                              : item.MATERIAS_PRIMAS.ds_unidade_medida}
+                          </span>
                         </div>
                       </div>
-                    ))}
-                  </div>
+
+                      <div className="flex items-center gap-6">
+                        <span className="font-bold text-[#7C3AED] text-lg bg-purple-50 px-3 py-1 rounded-lg">
+                          {formatRecipeValue(
+                            item.qt_uso_por_unidade,
+                            item.MATERIAS_PRIMAS.ds_unidade_medida,
+                          )}
+                        </span>
+                        <button
+                          onClick={() => handleRemoveItem(item.cd_ficha)}
+                          className="text-gray-300 hover:text-red-500 p-2 rounded-lg hover:bg-red-50 transition-colors"
+                        >
+                          <Trash2 size={18} />
+                        </button>
+                      </div>
+                    </div>
+                  ))
                 )}
               </div>
             </div>
           </div>
         </section>
-      </div>
+      </main>
     </div>
   );
 }

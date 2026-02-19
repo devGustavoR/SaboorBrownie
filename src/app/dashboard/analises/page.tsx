@@ -93,8 +93,10 @@ export default function AnalyticsPage() {
         // Top Produtos
         const productMap: Record<string, number> = {};
         sales.forEach((sale) => {
-          // @ts-ignore
-          const flavor = sale.LOTES?.tp_sabor || "Avulso";
+          const loteData = Array.isArray(sale.LOTES)
+            ? sale.LOTES[0]
+            : sale.LOTES;
+          const flavor = loteData?.tp_sabor || "Avulso";
           productMap[flavor] = (productMap[flavor] || 0) + 1;
         });
 
@@ -229,14 +231,14 @@ export default function AnalyticsPage() {
               displayColors: true,
               callbacks: {
                 label: (ctx) =>
-                  `${ctx.dataset.label}: ${formatCurrency(ctx.parsed.y)}`,
+                  `${ctx.dataset.label}: ${formatCurrency(ctx.parsed.y ?? 0)}`,
               },
             },
           },
           scales: {
             y: {
               beginAtZero: true,
-              grid: { color: "rgba(0, 0, 0, 0.05)", drawBorder: false as any },
+              grid: { color: "rgba(0, 0, 0, 0.05)" },
               ticks: { callback: (v) => `R$ ${v}`, color: "#6B7280" },
             },
             x: { grid: { display: false }, ticks: { color: "#6B7280" } },

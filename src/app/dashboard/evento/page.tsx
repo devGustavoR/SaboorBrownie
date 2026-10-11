@@ -27,9 +27,9 @@ interface FichaRow {
 }
 
 // tam = tamanho da embalagem na unidade da matéria (ex: 900 ml); preco = R$ da embalagem.
-// Sem tamanho, o preço é tratado como R$ por unidade de medida.
+// Sem tam informado vale o padrão da matéria (1 kg, 1 un, ...) — ver defaultTam.
 interface Preco {
-  tam: string;
+  tam?: string;
   preco: string;
 }
 
@@ -66,6 +66,15 @@ const formatCurrency = (value: number) =>
 
 const formatQty = (value: number) =>
   value.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
+
+// Embalagem padrão quando você não informa o tamanho: 1 kg / 1 un (caixa, pacote),
+// salvo itens que vêm em embalagem maior.
+const defaultTam = (m: Materia) => {
+  const nome = m.nm_item.toLowerCase();
+  if (nome.includes("óleo") || nome.includes("oleo")) return 900; // garrafa 900 ml
+  if (nome.includes("ovo")) return 30; // placa com 30
+  return 1;
+};
 
 const formatSabor = (sabor: string) =>
   sabor
@@ -144,7 +153,14 @@ export default function EventPrepPage() {
         setCurrentId(draft.currentId ?? null);
         setNomeEvento(draft.nomeEvento ?? "");
         setQtdSabores(draft.qtdSabores ?? {});
-        setPrecos(draft.precos ?? {});
+        const limpos: Record<string, Preco> = {};
+        for (const [id, p] of Object.entries(draft.precos ?? {})) {
+          limpos[id] = {
+            preco: p.preco ?? "",
+            ...(p.tam ? { tam: p.tam } : {}),
+          };
+        }
+        setPrecos(limpos);
       }
       setSaved(readJSON<SavedBudget[]>(BUDGETS_KEY, []));
       setLoaded(true);
@@ -185,24 +201,24 @@ export default function EventPrepPage() {
       );
     }
 
-    // R$ por unidade de medida de cada matéria
-    const precoUnit = (id: string) => {
-      const p = precos[id];
-      const tam = toNumber(p?.tam);
-      const preco = toNumber(p?.preco);
-      return tam > 0 ? preco / tam : preco;
+    // Tamanho da embalagem (informado ou padrão) e R$ por unidade de medida
+    const tamDe = (m: Materia) => {
+      const t = toNumber(precos[m.cd_materia]?.tam);
+      return t > 0 ? t : defaultTam(m);
     };
+    const precoUnit = (m: Materia) =>
+      toNumber(precos[m.cd_materia]?.preco) / tamDe(m);
 
     const linhas = [...usadas.values()]
       .sort((a, b) => a.nm_item.localeCompare(b.nm_item))
       .map((m) => {
         const need = necessario.get(m.cd_materia) ?? 0;
-        const tam = toNumber(precos[m.cd_materia]?.tam);
+        const tam = tamDe(m);
         const preco = toNumber(precos[m.cd_materia]?.preco);
-        const pacotes =
-          tam > 0 ? Math.ceil(Math.round((need / tam) * 1e6) / 1e6) : null;
-        const compra = pacotes !== null ? pacotes * preco : need * preco;
-        const uso = need * precoUnit(m.cd_materia);
+        // sempre compra embalagem inteira (arredonda para cima)
+        const pacotes = Math.ceil(Math.round((need / tam) * 1e6) / 1e6);
+        const compra = pacotes * preco;
+        const uso = need * precoUnit(m);
         return { materia: m, need, tam, preco, pacotes, compra, uso };
       });
 
@@ -214,14 +230,15 @@ export default function EventPrepPage() {
     const totalUso = linhas.reduce((acc, l) => acc + l.uso, 0);
 
     // Custo (proporcional) de cada sabor
+    const materiaPorId = new Map(materias.map((m) => [m.cd_materia, m]));
     const custoSabor: Record<string, number> = {};
     for (const s of sabores) {
       const porUnidade = ficha
         .filter((f) => f.tp_sabor === s)
-        .reduce(
-          (acc, f) => acc + f.qt_uso_por_unidade * precoUnit(f.cd_materia),
-          0,
-        );
+        .reduce((acc, f) => {
+          const m = materiaPorId.get(f.cd_materia);
+          return m ? acc + f.qt_uso_por_unidade * precoUnit(m) : acc;
+        }, 0);
       custoSabor[s] = porUnidade * toNumber(qtdSabores[s]);
     }
 
@@ -253,7 +270,7 @@ export default function EventPrepPage() {
   const setPreco = (id: string, patch: Partial<Preco>) =>
     setPrecos((prev) => ({
       ...prev,
-      [id]: { ...(prev[id] ?? { tam: "", preco: "" }), ...patch },
+      [id]: { ...(prev[id] ?? { preco: "" }), ...patch },
     }));
 
   const onlyNumber = (v: string) => v.replace(/[^\d.,]/g, "");
@@ -469,9 +486,10 @@ export default function EventPrepPage() {
               <div className="p-6 border-b border-gray-100">
                 <h3 className="text-lg font-bold">Matérias do evento</h3>
                 <p className="text-sm text-gray-500 mt-1">
-                  Quantidade calculada pela ficha técnica. Preencha o tamanho e
-                  o preço da embalagem que você compra (ex: óleo 900 ml por R$
-                  8).
+                  Quantidade calculada pela ficha técnica. Informe o preço da
+                  embalagem que você compra e, se ela não for de 1 kg/un, o
+                  tamanho (ex: óleo 900 ml, ovos 30 un). Sempre compra embalagem
+                  inteira.
                 </p>
               </div>
 
@@ -539,7 +557,7 @@ export default function EventPrepPage() {
                       <input
                         type="text"
                         inputMode="decimal"
-                        value={precos[id]?.tam ?? ""}
+                        value={precos[id]?.tam ?? String(l.tam)}
                         onChange={(e) =>
                           setPreco(id, { tam: onlyNumber(e.target.value) })
                         }
@@ -557,7 +575,7 @@ export default function EventPrepPage() {
                         className={`col-span-4 md:col-span-2 ${inputBase}`}
                       />
                       <div className="col-span-6 md:col-span-1 md:text-right text-sm text-gray-600">
-                        {l.pacotes !== null ? `${l.pacotes}×` : "—"}
+                        {l.need > 0 ? `${l.pacotes}×` : "—"}
                       </div>
                       <div className="col-span-6 md:col-span-2 text-right font-bold text-gray-900 text-sm">
                         {formatCurrency(l.compra)}

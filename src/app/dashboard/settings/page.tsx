@@ -9,9 +9,11 @@ import {
   Loader2,
   Menu,
   Package,
+  Pencil,
   Plus,
   Save,
   Trash2,
+  X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -51,6 +53,11 @@ export default function SettingsPage() {
   const [selectedUnit, setSelectedUnit] = useState("");
   const [recipeYield, setRecipeYield] = useState(12);
   const [addingItem, setAddingItem] = useState(false);
+
+  // Edição de ingrediente da receita
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
 
   // --- CARREGAMENTO INICIAL ---
   useEffect(() => {
@@ -159,10 +166,54 @@ export default function SettingsPage() {
     setAddingItem(false);
   };
 
-  const handleRemoveItem = async (id: number) => {
+  const handleRemoveItem = async (id: string) => {
+    if (!confirm("Remover este ingrediente da receita?")) return;
     // Atualização otimista
     setRecipeItems((prev) => prev.filter((i) => i.cd_ficha !== id));
     await supabase.from("FICHA_TECNICA").delete().eq("cd_ficha", id);
+  };
+
+  // kg/L são digitados em g/ml (mesma regra do formulário de adicionar)
+  const isBigUnit = (unit: string) =>
+    ["kg", "l"].includes((unit || "").toLowerCase());
+
+  const startEdit = (item: any) => {
+    const unit = item.MATERIAS_PRIMAS.ds_unidade_medida;
+    const total = item.qt_uso_por_unidade * recipeYield;
+    const shown = isBigUnit(unit) ? total * 1000 : total;
+    setEditingId(item.cd_ficha);
+    setEditValue(String(parseFloat(shown.toFixed(2))));
+  };
+
+  const handleSaveEdit = async (item: any) => {
+    const value = parseFloat(editValue.replace(",", "."));
+    if (!Number.isFinite(value) || value <= 0 || recipeYield <= 0) {
+      alert("Informe uma quantidade válida.");
+      return;
+    }
+    setSavingEdit(true);
+    const unit = item.MATERIAS_PRIMAS.ds_unidade_medida;
+    const base = isBigUnit(unit) ? value / 1000 : value;
+    const valuePerUnit = base / recipeYield;
+
+    const { error } = await supabase
+      .from("FICHA_TECNICA")
+      .update({ qt_uso_por_unidade: valuePerUnit })
+      .eq("cd_ficha", item.cd_ficha);
+
+    if (error) {
+      alert("Erro ao salvar a alteração.");
+    } else {
+      setRecipeItems((prev) =>
+        prev.map((i) =>
+          i.cd_ficha === item.cd_ficha
+            ? { ...i, qt_uso_por_unidade: valuePerUnit }
+            : i,
+        ),
+      );
+      setEditingId(null);
+    }
+    setSavingEdit(false);
   };
 
   // Helper para exibir valor total da receita (Unitário * Rendimento)
@@ -419,13 +470,74 @@ export default function SettingsPage() {
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-6">
-                        <span className="font-bold text-[#7C3AED] text-lg bg-purple-50 px-3 py-1 rounded-lg">
-                          {formatRecipeValue(
-                            item.qt_uso_por_unidade,
-                            item.MATERIAS_PRIMAS.ds_unidade_medida,
-                          )}
-                        </span>
+                      <div className="flex items-center gap-3">
+                        {editingId === item.cd_ficha ? (
+                          <>
+                            <div className="flex items-center bg-white rounded-lg border border-purple-200 px-2">
+                              <input
+                                autoFocus
+                                type="text"
+                                inputMode="decimal"
+                                value={editValue}
+                                onChange={(e) =>
+                                  setEditValue(
+                                    e.target.value.replace(/[^\d.,]/g, ""),
+                                  )
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") handleSaveEdit(item);
+                                  if (e.key === "Escape") setEditingId(null);
+                                }}
+                                className="w-20 py-1.5 text-right font-bold text-[#7C3AED] border-none focus:ring-0 bg-transparent outline-none"
+                              />
+                              <span className="text-xs text-gray-400 font-bold pl-1 uppercase">
+                                {isBigUnit(
+                                  item.MATERIAS_PRIMAS.ds_unidade_medida,
+                                )
+                                  ? item.MATERIAS_PRIMAS.ds_unidade_medida.toLowerCase() ===
+                                    "kg"
+                                    ? "g"
+                                    : "ml"
+                                  : item.MATERIAS_PRIMAS.ds_unidade_medida}
+                              </span>
+                            </div>
+                            <button
+                              onClick={() => handleSaveEdit(item)}
+                              disabled={savingEdit}
+                              className="text-green-500 hover:bg-green-50 p-2 rounded-lg transition-colors disabled:opacity-50"
+                              title="Salvar"
+                            >
+                              {savingEdit ? (
+                                <Loader2 size={18} className="animate-spin" />
+                              ) : (
+                                <Check size={18} />
+                              )}
+                            </button>
+                            <button
+                              onClick={() => setEditingId(null)}
+                              className="text-gray-400 hover:bg-gray-100 p-2 rounded-lg transition-colors"
+                              title="Cancelar"
+                            >
+                              <X size={18} />
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <span className="font-bold text-[#7C3AED] text-lg bg-purple-50 px-3 py-1 rounded-lg">
+                              {formatRecipeValue(
+                                item.qt_uso_por_unidade,
+                                item.MATERIAS_PRIMAS.ds_unidade_medida,
+                              )}
+                            </span>
+                            <button
+                              onClick={() => startEdit(item)}
+                              className="text-gray-300 hover:text-[#7C3AED] p-2 rounded-lg hover:bg-purple-50 transition-colors"
+                              title="Editar quantidade"
+                            >
+                              <Pencil size={18} />
+                            </button>
+                          </>
+                        )}
                         <button
                           onClick={() => handleRemoveItem(item.cd_ficha)}
                           className="text-gray-300 hover:text-red-500 p-2 rounded-lg hover:bg-red-50 transition-colors"

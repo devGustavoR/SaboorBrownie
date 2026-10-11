@@ -31,6 +31,8 @@ interface FichaRow {
 interface Preco {
   tam?: string;
   preco: string;
+  // quantidade de embalagens a comprar, sobrescreve o cálculo automático
+  qtdComprar?: string;
 }
 
 interface Draft {
@@ -158,6 +160,7 @@ export default function EventPrepPage() {
           limpos[id] = {
             preco: p.preco ?? "",
             ...(p.tam ? { tam: p.tam } : {}),
+            ...(p.qtdComprar ? { qtdComprar: p.qtdComprar } : {}),
           };
         }
         setPrecos(limpos);
@@ -216,10 +219,23 @@ export default function EventPrepPage() {
         const tam = tamDe(m);
         const preco = toNumber(precos[m.cd_materia]?.preco);
         // sempre compra embalagem inteira (arredonda para cima)
-        const pacotes = Math.ceil(Math.round((need / tam) * 1e6) / 1e6);
+        const pacotesAuto =
+          need > 0 ? Math.ceil(Math.round((need / tam) * 1e6) / 1e6) : 0;
+        const manual = toNumber(precos[m.cd_materia]?.qtdComprar);
+        const pacotes = manual > 0 ? manual : pacotesAuto;
         const compra = pacotes * preco;
         const uso = need * precoUnit(m);
-        return { materia: m, need, tam, preco, pacotes, compra, uso };
+        return {
+          materia: m,
+          need,
+          tam,
+          preco,
+          pacotes,
+          pacotesAuto,
+          manual: manual > 0,
+          compra,
+          uso,
+        };
       });
 
     const totalBrownies = sabores.reduce(
@@ -519,11 +535,11 @@ export default function EventPrepPage() {
 
               {/* Cabeçalho */}
               <div className="hidden md:grid grid-cols-12 gap-3 px-6 py-3 mt-4 text-xs font-semibold text-gray-400 uppercase tracking-wider border-y border-gray-100 bg-gray-50/50">
-                <div className="col-span-3">Matéria</div>
+                <div className="col-span-2">Matéria</div>
                 <div className="col-span-2 text-right">Necessário</div>
-                <div className="col-span-2">Embalagem</div>
+                <div className="col-span-2">Tamanho da emb.</div>
                 <div className="col-span-2">Preço emb.</div>
-                <div className="col-span-1 text-right">Comprar</div>
+                <div className="col-span-2">Qtd a comprar</div>
                 <div className="col-span-2 text-right">Gasto</div>
               </div>
 
@@ -544,7 +560,7 @@ export default function EventPrepPage() {
                         l.need <= 0 ? "opacity-60" : ""
                       }`}
                     >
-                      <div className="col-span-12 md:col-span-3 min-w-0">
+                      <div className="col-span-12 md:col-span-2 min-w-0">
                         <p className="font-semibold text-gray-900 text-sm truncate">
                           {l.materia.nm_item.trim()}
                         </p>
@@ -554,16 +570,22 @@ export default function EventPrepPage() {
                         {formatQty(l.need)}{" "}
                         <span className="text-xs text-gray-400">{un}</span>
                       </div>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        value={precos[id]?.tam ?? String(l.tam)}
-                        onChange={(e) =>
-                          setPreco(id, { tam: onlyNumber(e.target.value) })
-                        }
-                        placeholder={`Tam. (${un})`}
-                        className={`col-span-4 md:col-span-2 ${inputBase}`}
-                      />
+                      <div className="col-span-4 md:col-span-2 relative">
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={precos[id]?.tam ?? String(l.tam)}
+                          onChange={(e) =>
+                            setPreco(id, { tam: onlyNumber(e.target.value) })
+                          }
+                          placeholder="Tamanho"
+                          title={`Quanto vem em cada embalagem (em ${un})`}
+                          className={`w-full pr-9 ${inputBase}`}
+                        />
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none">
+                          {un}
+                        </span>
+                      </div>
                       <input
                         type="text"
                         inputMode="decimal"
@@ -574,9 +596,21 @@ export default function EventPrepPage() {
                         placeholder="R$"
                         className={`col-span-4 md:col-span-2 ${inputBase}`}
                       />
-                      <div className="col-span-6 md:col-span-1 md:text-right text-sm text-gray-600">
-                        {l.need > 0 ? `${l.pacotes}×` : "—"}
-                      </div>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={precos[id]?.qtdComprar ?? ""}
+                        onChange={(e) =>
+                          setPreco(id, {
+                            qtdComprar: e.target.value.replace(/[^\d]/g, ""),
+                          })
+                        }
+                        placeholder={`${l.pacotesAuto} (auto)`}
+                        title="Deixe vazio para usar o cálculo automático"
+                        className={`col-span-6 md:col-span-2 ${inputBase} ${
+                          l.manual ? "ring-2 ring-purple-300 font-semibold" : ""
+                        }`}
+                      />
                       <div className="col-span-6 md:col-span-2 text-right font-bold text-gray-900 text-sm">
                         {formatCurrency(l.compra)}
                       </div>

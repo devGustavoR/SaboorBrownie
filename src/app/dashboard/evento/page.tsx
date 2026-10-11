@@ -3,87 +3,144 @@
 import { supabase } from "@/lib/supabase";
 import {
   CalendarDays,
+  Check,
   Download,
+  FolderOpen,
   Plus,
   Receipt,
+  Save,
   Trash2,
   Wallet,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 // --- Tipagem ---
+// qtd e preco ficam como texto (o que o usuário digitou) e só viram número no cálculo.
 interface EventItem {
   id: string;
   nome: string;
-  qtd: number;
+  qtd: string;
   unidade: string;
-  preco: number; // preço por unidade
+  preco: string; // preço por unidade
 }
 
-interface EventPlan {
+interface Draft {
+  currentId: string | null;
   nomeEvento: string;
-  unidadesProduzir: number;
+  unidadesProduzir: string;
   itens: EventItem[];
 }
 
-const STORAGE_KEY = "saboor:preparo-evento";
+interface SavedBudget {
+  id: string;
+  nomeEvento: string;
+  unidadesProduzir: string;
+  itens: EventItem[];
+  total: number;
+  salvoEm: string;
+}
+
+const DRAFT_KEY = "saboor:preparo-evento";
+const BUDGETS_KEY = "saboor:orcamentos-evento";
 const UNIDADES = ["un", "kg", "g", "L", "ml", "pct", "cx"];
 
 const newId = () => Math.random().toString(36).slice(2, 10);
 
+// Aceita "16,33" e "16.33"
+const toNumber = (value: string | number) => {
+  if (typeof value === "number") return value;
+  const n = parseFloat(String(value).replace(",", "."));
+  return Number.isFinite(n) ? n : 0;
+};
+
 const formatCurrency = (value: number) =>
   value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
+const normalizeItem = (i: Partial<EventItem>): EventItem => ({
+  id: i.id ?? newId(),
+  nome: i.nome ?? "",
+  qtd: i.qtd === undefined || Number(i.qtd) === 0 ? "" : String(i.qtd),
+  unidade: i.unidade ?? "un",
+  preco: i.preco === undefined || Number(i.preco) === 0 ? "" : String(i.preco),
+});
+
+const readJSON = <T,>(key: string, fallback: T): T => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
 export default function EventPrepPage() {
+  const [currentId, setCurrentId] = useState<string | null>(null);
   const [nomeEvento, setNomeEvento] = useState("");
-  const [unidadesProduzir, setUnidadesProduzir] = useState(0);
+  const [unidadesProduzir, setUnidadesProduzir] = useState("");
   const [itens, setItens] = useState<EventItem[]>([]);
+  const [saved, setSaved] = useState<SavedBudget[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
 
-  // --- Carregar plano salvo ---
+  // --- Carregar rascunho e orçamentos salvos ---
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const plan: EventPlan = JSON.parse(raw);
-        setNomeEvento(plan.nomeEvento ?? "");
-        setUnidadesProduzir(plan.unidadesProduzir ?? 0);
-        setItens(plan.itens ?? []);
+    // adiado para depois da hidratação (localStorage só existe no cliente)
+    const timer = setTimeout(() => {
+      const draft = readJSON<Partial<Draft> | null>(DRAFT_KEY, null);
+      if (draft) {
+        setCurrentId(draft.currentId ?? null);
+        setNomeEvento(draft.nomeEvento ?? "");
+        setUnidadesProduzir(
+          draft.unidadesProduzir && Number(draft.unidadesProduzir) !== 0
+            ? String(draft.unidadesProduzir)
+            : "",
+        );
+        setItens((draft.itens ?? []).map(normalizeItem));
       }
-    } catch {
-      // plano corrompido: começa vazio
-    }
-    setLoaded(true);
+      setSaved(readJSON<SavedBudget[]>(BUDGETS_KEY, []));
+      setLoaded(true);
+    }, 0);
+    return () => clearTimeout(timer);
   }, []);
 
-  // --- Salvar automaticamente ---
+  // --- Rascunho salvo automaticamente ---
   useEffect(() => {
     if (!loaded) return;
-    const plan: EventPlan = { nomeEvento, unidadesProduzir, itens };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(plan));
-  }, [nomeEvento, unidadesProduzir, itens, loaded]);
+    const draft: Draft = { currentId, nomeEvento, unidadesProduzir, itens };
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+    } catch {
+      // storage indisponível: segue sem rascunho
+    }
+  }, [currentId, nomeEvento, unidadesProduzir, itens, loaded]);
 
   // --- Totais ---
   const total = useMemo(
-    () => itens.reduce((acc, i) => acc + i.qtd * i.preco, 0),
-    [itens],
-  );
-  const custoPorUnidade = unidadesProduzir > 0 ? total / unidadesProduzir : 0;
-  const maiorItem = useMemo(
     () =>
-      itens.reduce<EventItem | null>(
-        (max, i) => (!max || i.qtd * i.preco > max.qtd * max.preco ? i : max),
-        null,
-      ),
+      itens.reduce((acc, i) => acc + toNumber(i.qtd) * toNumber(i.preco), 0),
     [itens],
   );
+  const unidades = toNumber(unidadesProduzir);
+  const custoPorUnidade = unidades > 0 ? total / unidades : 0;
+  const maiorItem = useMemo(() => {
+    let max: EventItem | null = null;
+    let maxVal = 0;
+    for (const i of itens) {
+      const v = toNumber(i.qtd) * toNumber(i.preco);
+      if (v > maxVal) {
+        max = i;
+        maxVal = v;
+      }
+    }
+    return max;
+  }, [itens]);
 
-  // --- Ações ---
+  // --- Ações da lista ---
   const addItem = () =>
     setItens((prev) => [
       ...prev,
-      { id: newId(), nome: "", qtd: 1, unidade: "un", preco: 0 },
+      { id: newId(), nome: "", qtd: "", unidade: "un", preco: "" },
     ]);
 
   const updateItem = (id: string, patch: Partial<EventItem>) =>
@@ -92,14 +149,19 @@ export default function EventPrepPage() {
   const removeItem = (id: string) =>
     setItens((prev) => prev.filter((i) => i.id !== id));
 
-  const clearAll = () => {
-    if (!confirm("Limpar todo o planejamento do evento?")) return;
+  const resetForm = () => {
+    setCurrentId(null);
     setNomeEvento("");
-    setUnidadesProduzir(0);
+    setUnidadesProduzir("");
     setItens([]);
   };
 
-  // Traz os nomes das matérias-primas cadastradas (sem sobrescrever o que já existe)
+  const clearAll = () => {
+    if (!confirm("Limpar todo o planejamento do evento?")) return;
+    resetForm();
+  };
+
+  // Traz os nomes das matérias-primas cadastradas (sem duplicar o que já existe)
   const importMaterials = async () => {
     setImporting(true);
     const { data, error } = await supabase
@@ -114,9 +176,9 @@ export default function EventPrepPage() {
           .map<EventItem>((m) => ({
             id: newId(),
             nome: m.nm_item,
-            qtd: 0,
+            qtd: "",
             unidade: m.ds_unidade_medida || "un",
-            preco: 0,
+            preco: "",
           }));
         return [...prev, ...novos];
       });
@@ -125,6 +187,58 @@ export default function EventPrepPage() {
     }
     setImporting(false);
   };
+
+  // --- Orçamentos salvos ---
+  const persistBudgets = (list: SavedBudget[]) => {
+    setSaved(list);
+    try {
+      localStorage.setItem(BUDGETS_KEY, JSON.stringify(list));
+    } catch {
+      alert("Não foi possível salvar neste navegador.");
+    }
+  };
+
+  const saveBudget = () => {
+    if (itens.length === 0) {
+      alert("Adicione ao menos um item antes de salvar.");
+      return;
+    }
+    const id = currentId ?? newId();
+    const budget: SavedBudget = {
+      id,
+      nomeEvento: nomeEvento.trim() || "Evento sem nome",
+      unidadesProduzir,
+      itens,
+      total,
+      salvoEm: new Date().toISOString(),
+    };
+    const exists = saved.some((b) => b.id === id);
+    persistBudgets(
+      exists
+        ? saved.map((b) => (b.id === id ? budget : b))
+        : [budget, ...saved],
+    );
+    setCurrentId(id);
+    setJustSaved(true);
+    setTimeout(() => setJustSaved(false), 2000);
+  };
+
+  const openBudget = (b: SavedBudget) => {
+    setCurrentId(b.id);
+    setNomeEvento(b.nomeEvento);
+    setUnidadesProduzir(b.unidadesProduzir);
+    setItens(b.itens.map(normalizeItem));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const deleteBudget = (id: string) => {
+    if (!confirm("Excluir este orçamento salvo?")) return;
+    persistBudgets(saved.filter((b) => b.id !== id));
+    if (currentId === id) setCurrentId(null);
+  };
+
+  const inputBase =
+    "px-3 py-2 bg-gray-50 rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#7C3AED]";
 
   return (
     <div className="min-h-screen bg-[#F3E8FF] font-sans text-gray-800">
@@ -155,7 +269,7 @@ export default function EventPrepPage() {
                   value={nomeEvento}
                   onChange={(e) => setNomeEvento(e.target.value)}
                   placeholder="Ex: Feira de sábado"
-                  className="mt-1 w-full px-4 py-2.5 bg-gray-50 rounded-xl text-sm outline-none focus:ring-2 focus:ring-[#7C3AED]"
+                  className={`mt-1 w-full ${inputBase} py-2.5 rounded-xl`}
                 />
               </div>
               <div>
@@ -163,12 +277,14 @@ export default function EventPrepPage() {
                   Brownies a produzir
                 </label>
                 <input
-                  type="number"
-                  min={0}
-                  value={unidadesProduzir || ""}
-                  onChange={(e) => setUnidadesProduzir(Number(e.target.value))}
+                  type="text"
+                  inputMode="numeric"
+                  value={unidadesProduzir}
+                  onChange={(e) =>
+                    setUnidadesProduzir(e.target.value.replace(/[^\d]/g, ""))
+                  }
                   placeholder="0"
-                  className="mt-1 w-full px-4 py-2.5 bg-gray-50 rounded-xl text-sm outline-none focus:ring-2 focus:ring-[#7C3AED]"
+                  className={`mt-1 w-full ${inputBase} py-2.5 rounded-xl`}
                 />
               </div>
             </div>
@@ -181,11 +297,20 @@ export default function EventPrepPage() {
               <div className="mt-4 pt-4 border-t border-white/20 flex justify-between text-sm">
                 <span className="text-purple-200">Custo por brownie</span>
                 <span className="font-bold">
-                  {unidadesProduzir > 0
-                    ? formatCurrency(custoPorUnidade)
-                    : "—"}
+                  {unidades > 0 ? formatCurrency(custoPorUnidade) : "—"}
                 </span>
               </div>
+              <button
+                onClick={saveBudget}
+                className="mt-5 w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-white text-[#6B21A8] font-bold text-sm hover:bg-purple-50 transition-all active:scale-95"
+              >
+                {justSaved ? <Check size={18} /> : <Save size={18} />}
+                {justSaved
+                  ? "Orçamento salvo!"
+                  : currentId
+                    ? "Atualizar orçamento"
+                    : "Salvar orçamento"}
+              </button>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -198,17 +323,15 @@ export default function EventPrepPage() {
               </div>
               <div className="bg-white p-5 rounded-2xl shadow-sm border border-purple-100">
                 <p className="text-sm font-bold text-gray-900 truncate">
-                  {maiorItem && maiorItem.qtd * maiorItem.preco > 0
-                    ? maiorItem.nome || "Sem nome"
-                    : "—"}
+                  {maiorItem ? maiorItem.nome || "Sem nome" : "—"}
                 </p>
                 <p className="text-xs text-gray-500 mt-1">Maior gasto</p>
               </div>
             </div>
           </aside>
 
-          {/* --- LISTA DE ITENS --- */}
-          <section className="lg:col-span-8">
+          {/* --- LISTA DE ITENS + SALVOS --- */}
+          <section className="lg:col-span-8 space-y-8">
             <div className="bg-white rounded-2xl shadow-sm border border-purple-100 flex flex-col">
               <div className="p-6 border-b border-gray-100 flex flex-col sm:flex-row gap-3 justify-between">
                 <h3 className="text-lg font-bold">Matérias do evento</h3>
@@ -248,7 +371,7 @@ export default function EventPrepPage() {
                 )}
 
                 {itens.map((item) => {
-                  const subtotal = item.qtd * item.preco;
+                  const subtotal = toNumber(item.qtd) * toNumber(item.preco);
                   return (
                     <div
                       key={item.id}
@@ -260,28 +383,31 @@ export default function EventPrepPage() {
                           updateItem(item.id, { nome: e.target.value })
                         }
                         placeholder="Nome do item"
-                        className="col-span-12 md:col-span-4 px-3 py-2 bg-gray-50 rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#7C3AED]"
+                        className={`col-span-12 md:col-span-4 ${inputBase}`}
                       />
                       <input
-                        type="number"
-                        min={0}
-                        step="any"
-                        value={item.qtd || ""}
+                        type="text"
+                        inputMode="decimal"
+                        value={item.qtd}
                         onChange={(e) =>
-                          updateItem(item.id, { qtd: Number(e.target.value) })
+                          updateItem(item.id, {
+                            qtd: e.target.value.replace(/[^\d.,]/g, ""),
+                          })
                         }
                         placeholder="Qtd"
-                        className="col-span-4 md:col-span-2 px-3 py-2 bg-gray-50 rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#7C3AED]"
+                        className={`col-span-4 md:col-span-2 ${inputBase}`}
                       />
                       <select
                         value={item.unidade}
                         onChange={(e) =>
                           updateItem(item.id, { unidade: e.target.value })
                         }
-                        className="col-span-4 md:col-span-2 px-3 py-2 bg-gray-50 rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#7C3AED]"
+                        className={`col-span-4 md:col-span-2 ${inputBase}`}
                       >
                         {[
-                          ...new Set([...UNIDADES, item.unidade].filter(Boolean)),
+                          ...new Set(
+                            [...UNIDADES, item.unidade].filter(Boolean),
+                          ),
                         ].map((u) => (
                           <option key={u} value={u}>
                             {u}
@@ -289,15 +415,16 @@ export default function EventPrepPage() {
                         ))}
                       </select>
                       <input
-                        type="number"
-                        min={0}
-                        step="0.01"
-                        value={item.preco || ""}
+                        type="text"
+                        inputMode="decimal"
+                        value={item.preco}
                         onChange={(e) =>
-                          updateItem(item.id, { preco: Number(e.target.value) })
+                          updateItem(item.id, {
+                            preco: e.target.value.replace(/[^\d.,]/g, ""),
+                          })
                         }
                         placeholder="R$"
-                        className="col-span-4 md:col-span-2 px-3 py-2 bg-gray-50 rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#7C3AED]"
+                        className={`col-span-4 md:col-span-2 ${inputBase}`}
                       />
                       <div className="col-span-10 md:col-span-1 text-right font-bold text-gray-900 text-sm">
                         {formatCurrency(subtotal)}
@@ -316,12 +443,22 @@ export default function EventPrepPage() {
 
               {/* Rodapé com total */}
               <div className="flex items-center justify-between px-6 py-4 border-t border-gray-100 bg-gray-50/50 rounded-b-2xl">
-                <button
-                  onClick={clearAll}
-                  className="text-sm text-gray-400 hover:text-red-600 transition-colors"
-                >
-                  Limpar tudo
-                </button>
+                <div className="flex gap-4">
+                  <button
+                    onClick={clearAll}
+                    className="text-sm text-gray-400 hover:text-red-600 transition-colors"
+                  >
+                    Limpar tudo
+                  </button>
+                  {currentId && (
+                    <button
+                      onClick={resetForm}
+                      className="text-sm text-gray-400 hover:text-[#7C3AED] transition-colors"
+                    >
+                      Novo orçamento
+                    </button>
+                  )}
+                </div>
                 <div className="text-right">
                   <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider mr-3">
                     Total
@@ -330,6 +467,59 @@ export default function EventPrepPage() {
                     {formatCurrency(total)}
                   </span>
                 </div>
+              </div>
+            </div>
+
+            {/* Orçamentos salvos */}
+            <div className="bg-white rounded-2xl shadow-sm border border-purple-100">
+              <div className="p-6 border-b border-gray-100">
+                <h3 className="text-lg font-bold flex items-center gap-2">
+                  <FolderOpen className="text-[#7C3AED]" size={20} />
+                  Orçamentos salvos
+                </h3>
+              </div>
+              <div className="p-2 space-y-1">
+                {saved.length === 0 && (
+                  <div className="text-center py-8 text-gray-400 text-sm">
+                    Nenhum orçamento salvo ainda.
+                  </div>
+                )}
+                {saved.map((b) => (
+                  <div
+                    key={b.id}
+                    className={`flex items-center justify-between gap-4 px-4 py-3 rounded-xl transition-colors ${
+                      b.id === currentId ? "bg-purple-50" : "hover:bg-purple-50"
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <p className="font-semibold text-gray-900 text-sm truncate">
+                        {b.nomeEvento}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {b.itens.length} itens ·{" "}
+                        {new Date(b.salvoEm).toLocaleDateString("pt-BR")}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="font-bold text-[#6B21A8]">
+                        {formatCurrency(b.total)}
+                      </span>
+                      <button
+                        onClick={() => openBudget(b)}
+                        className="px-3 py-1.5 text-xs font-semibold text-[#7C3AED] bg-purple-100 rounded-lg hover:bg-purple-200 transition-colors"
+                      >
+                        Abrir
+                      </button>
+                      <button
+                        onClick={() => deleteBudget(b.id)}
+                        className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        title="Excluir"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           </section>

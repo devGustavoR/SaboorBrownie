@@ -36,6 +36,27 @@ const FLAVOR_LABELS: Record<string, string> = {
   SEM_RECHEIO: "Sem Recheio",
 };
 
+// Rendimento base (quantos brownies a receita rende) fica salvo por sabor neste navegador
+const YIELD_KEY = (flavor: string) => `saboor:rendimento:${flavor}`;
+const DEFAULT_YIELD = 12;
+
+const readYield = (flavor: string) => {
+  try {
+    const n = Number(localStorage.getItem(YIELD_KEY(flavor)));
+    return n > 0 ? n : DEFAULT_YIELD;
+  } catch {
+    return DEFAULT_YIELD;
+  }
+};
+
+const saveYield = (flavor: string, value: number) => {
+  try {
+    if (value > 0) localStorage.setItem(YIELD_KEY(flavor), String(value));
+  } catch {
+    // storage indisponível: o valor vale só para esta sessão
+  }
+};
+
 export default function SettingsPage() {
   // --- STATES ---
   const [loadingPrices, setLoadingPrices] = useState(true);
@@ -51,7 +72,7 @@ export default function SettingsPage() {
   const [selectedMaterialId, setSelectedMaterialId] = useState("");
   const [amountInput, setAmountInput] = useState("");
   const [selectedUnit, setSelectedUnit] = useState("");
-  const [recipeYield, setRecipeYield] = useState(12);
+  const [recipeYield, setRecipeYield] = useState(DEFAULT_YIELD);
   const [addingItem, setAddingItem] = useState(false);
 
   // Edição de ingrediente da receita
@@ -86,6 +107,12 @@ export default function SettingsPage() {
       setLoadingPrices(false);
     };
     fetchData();
+  }, []);
+
+  // Rendimento salvo do sabor inicial (localStorage só existe no cliente)
+  useEffect(() => {
+    const timer = setTimeout(() => setRecipeYield(readYield("TRADICIONAL")), 0);
+    return () => clearTimeout(timer);
   }, []);
 
   // Carregar Receita ao trocar aba
@@ -326,7 +353,11 @@ export default function SettingsPage() {
             {FLAVORS.map((flavor) => (
               <button
                 key={flavor}
-                onClick={() => setSelectedFlavor(flavor)}
+                onClick={() => {
+                  setSelectedFlavor(flavor);
+                  setRecipeYield(readYield(flavor));
+                  setEditingId(null);
+                }}
                 className={`px-5 py-2 rounded-full text-sm font-semibold transition-all ${
                   selectedFlavor === flavor
                     ? "bg-[#7C3AED] text-white shadow-md shadow-purple-300 transform scale-105"
@@ -351,13 +382,19 @@ export default function SettingsPage() {
                   <label className="block text-xs font-bold text-blue-600 uppercase">
                     Rendimento Base
                   </label>
-                  <p className="text-[10px] text-blue-400">Tabuleiro padrão</p>
+                  <p className="text-[10px] text-blue-400">
+                    Salvo para este sabor
+                  </p>
                 </div>
                 <div className="flex items-center bg-white rounded-lg px-2 border border-blue-200">
                   <input
                     type="number"
                     value={recipeYield}
-                    onChange={(e) => setRecipeYield(Number(e.target.value))}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      setRecipeYield(n);
+                      saveYield(selectedFlavor, n);
+                    }}
                     className="w-12 py-1 text-center font-bold text-blue-700 border-none focus:ring-0 bg-transparent"
                   />
                   <span className="text-xs text-blue-500 font-medium pr-1">

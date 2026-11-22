@@ -248,6 +248,7 @@ export default function DiaEventoPage() {
           descontoPct: b.descontoPct,
           descontoDestino: b.descontoDestino,
           custo: typeof b.total === "number" ? b.total : undefined,
+          salvoEm: (b as { salvoEm?: string }).salvoEm,
         });
       }
       if (draft?.qtdSabores && Object.keys(draft.qtdSabores).length > 0) {
@@ -329,20 +330,26 @@ export default function DiaEventoPage() {
         const orc = ro.data
           .map((r) => r.ds_dados as Plano & { legado?: unknown; total?: number })
           .filter((b) => b?.id && !b.legado && b.qtdSabores);
+        const dePlano = (b: (typeof orc)[number]): Plano => ({
+          id: b.id,
+          nomeEvento: b.nomeEvento,
+          qtdSabores: b.qtdSabores,
+          valoresVenda: b.valoresVenda,
+          descontoPct: b.descontoPct,
+          descontoDestino: b.descontoDestino,
+          custo: typeof b.total === "number" ? b.total : undefined,
+          salvoEm: b.salvoEm,
+        });
         setPlanos((atual) => {
+          const remoto = new Map(orc.map((b) => [b.id, b]));
+          // versão do banco mais nova que a deste aparelho substitui a local
+          const atualizados = atual.map((p) => {
+            const r = remoto.get(p.id);
+            return r?.salvoEm && (!p.salvoEm || r.salvoEm > p.salvoEm) ? dePlano(r) : p;
+          });
           const ids = new Set(atual.map((p) => p.id));
-          const novos: Plano[] = orc
-            .filter((b) => !ids.has(b.id))
-            .map((b) => ({
-              id: b.id,
-              nomeEvento: b.nomeEvento,
-              qtdSabores: b.qtdSabores,
-              valoresVenda: b.valoresVenda,
-              descontoPct: b.descontoPct,
-              descontoDestino: b.descontoDestino,
-              custo: typeof b.total === "number" ? b.total : undefined,
-            }));
-          return novos.length > 0 ? [...atual, ...novos] : atual;
+          const novos = orc.filter((b) => !ids.has(b.id)).map(dePlano);
+          return [...atualizados, ...novos];
         });
         if (orc.length > 0) setSelecionado((s) => s ?? orc[0].id);
       }

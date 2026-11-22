@@ -44,6 +44,9 @@ interface Preco {
 
 interface Draft {
   currentId: string | null;
+  // salvoEm do orçamento quando ele foi aberto/salvo neste navegador: se o
+  // banco tiver uma versão mais nova, o rascunho é velho e é trocado por ela
+  baseSalvoEm?: string | null;
   nomeEvento: string;
   qtdSabores: Record<string, string>;
   precos: Record<string, Preco>;
@@ -254,6 +257,8 @@ export default function EventPrepPage() {
 
   // Plano do evento
   const [currentId, setCurrentId] = useState<string | null>(null);
+  const [baseSalvoEm, setBaseSalvoEm] = useState<string | null>(null);
+  const [atualizadoDeFora, setAtualizadoDeFora] = useState(false);
   const [nomeEvento, setNomeEvento] = useState("");
   const [qtdSabores, setQtdSabores] = useState<Record<string, string>>({});
   const [precos, setPrecos] = useState<Record<string, Preco>>({});
@@ -317,6 +322,7 @@ export default function EventPrepPage() {
       const draft = readJSON<Partial<Draft> | null>(DRAFT_KEY, null);
       if (draft) {
         setCurrentId(draft.currentId ?? null);
+        setBaseSalvoEm(draft.baseSalvoEm ?? null);
         setNomeEvento(draft.nomeEvento ?? "");
         setQtdSabores(unirSemRecheio(draft.qtdSabores ?? {}));
         setValoresVenda(draft.valoresVenda ?? {});
@@ -363,6 +369,37 @@ export default function EventPrepPage() {
           const r = remotos;
           setSaved((prev) => juntar(prev, r));
         }
+
+        // O rascunho deste navegador partiu de uma versão mais antiga do
+        // orçamento (ele foi salvo depois em outro aparelho): usa a versão salva
+        const atual = draft?.currentId
+          ? juntar(todos, remotos ?? []).find((b) => b.id === draft.currentId)
+          : undefined;
+        if (draft && atual && !atual.legado) {
+          const velho = !draft.baseSalvoEm || atual.salvoEm > draft.baseSalvoEm;
+          const diferente =
+            assinatura(atual) !==
+            assinatura({
+              nomeEvento: draft.nomeEvento ?? "",
+              qtdSabores: unirSemRecheio(draft.qtdSabores ?? {}),
+              precos: draft.precos ?? {},
+              valoresVenda: draft.valoresVenda,
+              descontoPct: draft.descontoPct,
+              descontoDestino: draft.descontoDestino,
+            });
+          if (velho) {
+            if (diferente) {
+              setNomeEvento(atual.nomeEvento);
+              setQtdSabores(unirSemRecheio(atual.qtdSabores ?? {}));
+              setValoresVenda(atual.valoresVenda ?? {});
+              setDescontoPct(atual.descontoPct ?? "");
+              setDescontoDestino(atual.descontoDestino ?? "");
+              setPrecos(atual.precos ?? {});
+              setAtualizadoDeFora(true);
+            }
+            setBaseSalvoEm(atual.salvoEm);
+          }
+        }
       })();
     }, 0);
     return () => clearTimeout(timer);
@@ -383,6 +420,7 @@ export default function EventPrepPage() {
     if (!loaded) return;
     const draft: Draft = {
       currentId,
+      baseSalvoEm,
       nomeEvento,
       qtdSabores,
       precos,
@@ -397,6 +435,7 @@ export default function EventPrepPage() {
     }
   }, [
     currentId,
+    baseSalvoEm,
     nomeEvento,
     qtdSabores,
     precos,
@@ -593,8 +632,22 @@ export default function EventPrepPage() {
 
   const onlyNumber = (v: string) => v.replace(/[^\d.,]/g, "");
 
+  // Coloca um orçamento salvo no formulário
+  function preencher(b: SavedBudget) {
+    setCurrentId(b.id);
+    setBaseSalvoEm(b.salvoEm);
+    setNomeEvento(b.nomeEvento);
+    setQtdSabores(unirSemRecheio(b.qtdSabores ?? {}));
+    setValoresVenda(b.valoresVenda ?? {});
+    setDescontoPct(b.descontoPct ?? "");
+    setDescontoDestino(b.descontoDestino ?? "");
+    setPrecos(b.precos ?? {});
+  }
+
   const resetForm = () => {
     setCurrentId(null);
+    setBaseSalvoEm(null);
+    setAtualizadoDeFora(false);
     setNomeEvento("");
     setQtdSabores({});
     setValoresVenda({});
@@ -647,6 +700,8 @@ export default function EventPrepPage() {
     );
     salvarNoBanco(budget);
     setCurrentId(id);
+    setBaseSalvoEm(budget.salvoEm);
+    setAtualizadoDeFora(false);
     setJustSaved(true);
     setTimeout(() => setJustSaved(false), 2000);
   };
@@ -658,14 +713,16 @@ export default function EventPrepPage() {
       !confirm(`Abrir "${b.nomeEvento}"? As alterações não salvas se perdem.`)
     )
       return;
-    setCurrentId(b.id);
-    setNomeEvento(b.nomeEvento);
-    setQtdSabores(unirSemRecheio(b.qtdSabores));
-    setValoresVenda(b.valoresVenda ?? {});
-    setDescontoPct(b.descontoPct ?? "");
-    setDescontoDestino(b.descontoDestino ?? "");
-    setPrecos(b.precos);
+    preencher(b);
+    setAtualizadoDeFora(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const descartar = () => {
+    if (!aberto) return;
+    if (!confirm(`Descartar as alterações e voltar ao "${aberto.nomeEvento}" salvo?`)) return;
+    preencher(aberto);
+    setAtualizadoDeFora(false);
   };
 
   const deleteBudget = (id: string) => {
@@ -720,7 +777,17 @@ export default function EventPrepPage() {
           >
             <Pencil size={16} className="shrink-0" />
             <span className="flex-1 min-w-0">
-              {aberto ? (
+              {atualizadoDeFora && aberto && !alterado ? (
+                <>
+                  <b>{aberto.nomeEvento}</b> foi atualizado em outro aparelho:
+                  carregamos a versão salva em{" "}
+                  {new Date(aberto.salvoEm).toLocaleString("pt-BR", {
+                    dateStyle: "short",
+                    timeStyle: "short",
+                  })}
+                  .
+                </>
+              ) : aberto ? (
                 <>
                   Editando <b>{aberto.nomeEvento}</b>
                   {alterado
@@ -736,6 +803,14 @@ export default function EventPrepPage() {
                 <>Comece pelo nome do evento e a quantidade de cada sabor.</>
               )}
             </span>
+            {alterado && aberto && (
+              <button
+                onClick={descartar}
+                className="px-3 py-1.5 rounded-lg bg-white/70 text-amber-900 font-semibold text-xs hover:bg-white active:scale-95"
+              >
+                Descartar alterações
+              </button>
+            )}
             {alterado && (
               <button
                 onClick={saveBudget}

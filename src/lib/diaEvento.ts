@@ -12,6 +12,7 @@ export interface Plano {
   descontoPct?: string;
   descontoDestino?: string;
   custo?: number; // custo previsto das compras (do orçamento)
+  salvoEm?: string; // quando o orçamento foi salvo (vale a versão mais nova)
   doBanco?: boolean; // recuperado do Supabase (não existe neste aparelho)
 }
 

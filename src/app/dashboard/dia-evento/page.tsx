@@ -323,6 +323,30 @@ export default function DiaEventoPage() {
   useEffect(() => {
     if (!loaded) return;
     const load = async () => {
+      // orçamentos da tela Evento (feitos em outro aparelho)
+      const ro = await supabase.from("ORCAMENTOS").select("ds_dados");
+      if (!ro.error && ro.data) {
+        const orc = ro.data
+          .map((r) => r.ds_dados as Plano & { legado?: unknown; total?: number })
+          .filter((b) => b?.id && !b.legado && b.qtdSabores);
+        setPlanos((atual) => {
+          const ids = new Set(atual.map((p) => p.id));
+          const novos: Plano[] = orc
+            .filter((b) => !ids.has(b.id))
+            .map((b) => ({
+              id: b.id,
+              nomeEvento: b.nomeEvento,
+              qtdSabores: b.qtdSabores,
+              valoresVenda: b.valoresVenda,
+              descontoPct: b.descontoPct,
+              descontoDestino: b.descontoDestino,
+              custo: typeof b.total === "number" ? b.total : undefined,
+            }));
+          return novos.length > 0 ? [...atual, ...novos] : atual;
+        });
+        if (orc.length > 0) setSelecionado((s) => s ?? orc[0].id);
+      }
+
       const { data, error } = await supabase
         .from("EVENTOS")
         .select("cd_evento, nm_evento, ds_plano, ds_dia");

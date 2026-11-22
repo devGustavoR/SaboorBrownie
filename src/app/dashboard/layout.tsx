@@ -1,3 +1,4 @@
+import { AuthGuard } from "@/components/AuthGuard";
 import { Navbar } from "@/components/Navbar";
 
 export default function DashboardLayout({
@@ -6,11 +7,11 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col min-h-screen w-full">
-      {/* A Navbar fica aqui, protegida dentro do /dashboard */}
-      <Navbar />
-
-      <main className="flex-1 w-full bg-brand-bg">{children}</main>
-    </div>
+    <AuthGuard>
+      <div className="flex flex-col min-h-screen w-full">
+        <Navbar />
+        <main className="flex-1 w-full bg-brand-bg">{children}</main>
+      </div>
+    </AuthGuard>
   );
 }

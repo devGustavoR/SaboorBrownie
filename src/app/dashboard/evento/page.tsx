@@ -1,16 +1,23 @@
 "use client";
 
+import { StatusSync } from "@/components/dia-evento/StatusSync";
+import { uuid } from "@/lib/diaEvento";
 import { supabase } from "@/lib/supabase";
+import { enfileirar, exclusoesPendentes } from "@/lib/sync";
 import {
   AlertTriangle,
   CalendarDays,
   Check,
+  FilePlus2,
   FolderOpen,
+  Pencil,
   Receipt,
   Save,
+  Store,
   Trash2,
   Wallet,
 } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 // --- Tipagem ---
@@ -128,7 +135,67 @@ const importOldBudgets = (current: SavedBudget[]): SavedBudget[] => {
   return converted.length ? [...current, ...converted] : current;
 };
 
-const newId = () => Math.random().toString(36).slice(2, 10);
+const newId = uuid;
+
+// Orçamentos também ficam no banco (para não depender de um só navegador)
+const salvarNoBanco = (b: SavedBudget) =>
+  enfileirar({
+    tipo: "upsert",
+    tabela: "ORCAMENTOS",
+    chave: "cd_orcamento",
+    linha: {
+      cd_orcamento: b.id,
+      nm_evento: b.nomeEvento,
+      ds_dados: b,
+      ts_salvo: b.salvoEm,
+      ts_atualizacao: new Date().toISOString(),
+    },
+  });
+
+const apagarNoBanco = (id: string) =>
+  enfileirar({
+    tipo: "delete",
+    tabela: "ORCAMENTOS",
+    chave: "cd_orcamento",
+    valores: [id],
+  });
+
+// Junta os orçamentos do navegador com os do banco (vale o salvo por último)
+const juntar = (
+  locais: SavedBudget[],
+  remotos: SavedBudget[],
+): SavedBudget[] => {
+  const m = new Map(locais.map((b) => [b.id, b]));
+  for (const r of remotos) {
+    const l = m.get(r.id);
+    if (!l || r.salvoEm > l.salvoEm) m.set(r.id, r);
+  }
+  return [...m.values()].sort((a, b) => b.salvoEm.localeCompare(a.salvoEm));
+};
+
+// Comparação sem campos vazios e sem depender da ordem das chaves
+const ordenado = <T,>(o: Record<string, T>, vazio: (v: T) => boolean) =>
+  Object.entries(o)
+    .filter(([, v]) => !vazio(v))
+    .sort(([a], [b]) => a.localeCompare(b));
+const assinatura = (x: {
+  nomeEvento: string;
+  qtdSabores: Record<string, string>;
+  precos: Record<string, Preco>;
+  valoresVenda?: Record<string, string>;
+  descontoPct?: string;
+  descontoDestino?: string;
+}) =>
+  JSON.stringify([
+    x.nomeEvento.trim() || "Evento sem nome",
+    ordenado(x.qtdSabores, (v) => !(Number(v) > 0)),
+    ordenado(x.precos, (p) => !p.preco && !p.tam && !p.qtdComprar).map(
+      ([k, p]) => [k, p.preco ?? "", p.tam ?? "", p.qtdComprar ?? ""],
+    ),
+    ordenado(x.valoresVenda ?? {}, (v) => !v),
+    x.descontoPct ?? "",
+    (x.descontoDestino ?? "").trim(),
+  ]);
 
 // Aceita "16,33" e "16.33"
 const toNumber = (value: string | undefined) => {
@@ -267,18 +334,49 @@ export default function EventPrepPage() {
       }
       const atuais = readJSON<SavedBudget[]>(BUDGETS_KEY, []);
       const todos = importOldBudgets(atuais);
-      if (todos !== atuais) {
-        try {
-          localStorage.setItem(BUDGETS_KEY, JSON.stringify(todos));
-        } catch {
-          // sem storage: os antigos aparecem só nesta sessão
-        }
-      }
-      setSaved(todos);
+      setSaved(juntar(todos, []));
       setLoaded(true);
+
+      // Depois junta com o banco: traz os de outros aparelhos e manda os daqui
+      void (async () => {
+        let remotos: SavedBudget[] | null = null;
+        try {
+          const { data, error } = await supabase
+            .from("ORCAMENTOS")
+            .select("cd_orcamento, ds_dados");
+          if (!error && data) {
+            const apagados = exclusoesPendentes("ORCAMENTOS");
+            remotos = data
+              .filter((r) => !apagados.has(r.cd_orcamento as string))
+              .map((r) => r.ds_dados as SavedBudget)
+              .filter((b) => b && b.id && b.salvoEm);
+          }
+        } catch {
+          // sem internet: fica com os deste navegador
+        }
+        const noBanco = new Map((remotos ?? []).map((b) => [b.id, b]));
+        for (const b of todos) {
+          const r = noBanco.get(b.id);
+          if (!r || b.salvoEm > r.salvoEm) salvarNoBanco(b);
+        }
+        if (remotos && remotos.length > 0) {
+          const r = remotos;
+          setSaved((prev) => juntar(prev, r));
+        }
+      })();
     }, 0);
     return () => clearTimeout(timer);
   }, []);
+
+  // --- Orçamentos guardados também neste navegador ---
+  useEffect(() => {
+    if (!loaded) return;
+    try {
+      localStorage.setItem(BUDGETS_KEY, JSON.stringify(saved));
+    } catch {
+      // sem storage: ficam só no banco
+    }
+  }, [loaded, saved]);
 
   // --- Rascunho salvo automaticamente ---
   useEffect(() => {
@@ -466,6 +564,21 @@ export default function EventPrepPage() {
 
   const custoPorBrownie =
     calc.totalBrownies > 0 ? calc.totalUso / calc.totalBrownies : 0;
+  const margem = calc.receita > 0 ? (calc.lucro / calc.receita) * 100 : 0;
+
+  // orçamento aberto e se há alterações ainda não salvas
+  const aberto = saved.find((b) => b.id === currentId) ?? null;
+  const formAtual = {
+    nomeEvento,
+    qtdSabores,
+    precos,
+    valoresVenda,
+    descontoPct,
+    descontoDestino,
+  };
+  const alterado = aberto
+    ? assinatura(aberto) !== assinatura(formAtual)
+    : calc.totalBrownies > 0 || nomeEvento.trim() !== "";
   const maiorGasto = calc.linhas.reduce<(typeof calc.linhas)[number] | null>(
     (max, l) => (l.compra > 0 && (!max || l.compra > max.compra) ? l : max),
     null,
@@ -495,15 +608,18 @@ export default function EventPrepPage() {
     resetForm();
   };
 
-  // --- Orçamentos salvos ---
-  const persistBudgets = (list: SavedBudget[]) => {
-    setSaved(list);
-    try {
-      localStorage.setItem(BUDGETS_KEY, JSON.stringify(list));
-    } catch {
-      alert("Não foi possível salvar neste navegador.");
-    }
+  const novoOrcamento = () => {
+    if (
+      alterado &&
+      !confirm("Começar um orçamento novo? As alterações não salvas se perdem.")
+    )
+      return;
+    resetForm();
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
+
+  // --- Orçamentos salvos ---
+  const persistBudgets = (list: SavedBudget[]) => setSaved(list);
 
   const saveBudget = () => {
     if (calc.totalBrownies <= 0) {
@@ -529,12 +645,19 @@ export default function EventPrepPage() {
         ? saved.map((b) => (b.id === id ? budget : b))
         : [budget, ...saved],
     );
+    salvarNoBanco(budget);
     setCurrentId(id);
     setJustSaved(true);
     setTimeout(() => setJustSaved(false), 2000);
   };
 
   const openBudget = (b: SavedBudget) => {
+    if (
+      alterado &&
+      b.id !== currentId &&
+      !confirm(`Abrir "${b.nomeEvento}"? As alterações não salvas se perdem.`)
+    )
+      return;
     setCurrentId(b.id);
     setNomeEvento(b.nomeEvento);
     setQtdSabores(unirSemRecheio(b.qtdSabores));
@@ -548,6 +671,7 @@ export default function EventPrepPage() {
   const deleteBudget = (id: string) => {
     if (!confirm("Excluir este orçamento salvo?")) return;
     persistBudgets(saved.filter((b) => b.id !== id));
+    apagarNoBanco(id);
     if (currentId === id) setCurrentId(null);
   };
 
@@ -558,15 +682,70 @@ export default function EventPrepPage() {
     <div className="min-h-screen bg-[#F3E8FF] font-sans text-gray-800">
       <div className="max-w-7xl mx-auto w-full p-6 lg:p-8">
         {/* Header */}
-        <header className="mb-8">
-          <h2 className="text-3xl font-bold text-gray-900 mb-2">
-            Preparo para Evento
-          </h2>
-          <p className="text-gray-500">
-            Informe quantos brownies de cada sabor e o preço das matérias — a
-            ficha técnica calcula o quanto você vai gastar.
-          </p>
+        <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
+          <div className="min-w-0">
+            <h2 className="text-3xl font-bold text-gray-900 mb-2">
+              Preparo para Evento
+            </h2>
+            <p className="text-gray-500">
+              Informe quantos brownies de cada sabor e o preço das matérias. A
+              ficha técnica calcula quanto você vai gastar e lucrar.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusSync />
+            <button
+              onClick={novoOrcamento}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-purple-100 text-sm font-semibold text-[#6B21A8] hover:bg-purple-50 active:scale-95 transition"
+            >
+              <FilePlus2 size={18} /> Novo orçamento
+            </button>
+            <Link
+              href="/dashboard/dia-evento"
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#7C3AED] text-white text-sm font-semibold hover:bg-[#6B21A8] active:scale-95 transition"
+            >
+              <Store size={18} /> Dia do Evento
+            </Link>
+          </div>
         </header>
+
+        {/* O que está sendo editado */}
+        {loaded && (
+          <div
+            className={`mb-6 flex flex-wrap items-center gap-3 rounded-2xl px-5 py-3 text-sm ${
+              alterado
+                ? "bg-amber-50 border border-amber-200 text-amber-900"
+                : "bg-white border border-purple-100 text-gray-600"
+            }`}
+          >
+            <Pencil size={16} className="shrink-0" />
+            <span className="flex-1 min-w-0">
+              {aberto ? (
+                <>
+                  Editando <b>{aberto.nomeEvento}</b>
+                  {alterado
+                    ? " · alterações não salvas"
+                    : ` · salvo em ${new Date(aberto.salvoEm).toLocaleString("pt-BR", {
+                        dateStyle: "short",
+                        timeStyle: "short",
+                      })}`}
+                </>
+              ) : alterado ? (
+                <>Orçamento novo, ainda não salvo</>
+              ) : (
+                <>Comece pelo nome do evento e a quantidade de cada sabor.</>
+              )}
+            </span>
+            {alterado && (
+              <button
+                onClick={saveBudget}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-400 text-amber-950 font-bold text-xs hover:bg-amber-300 active:scale-95"
+              >
+                <Save size={14} /> {aberto ? "Salvar alterações" : "Salvar"}
+              </button>
+            )}
+          </div>
+        )}
 
         {dbError && (
           <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-100 text-sm text-red-700">
@@ -621,6 +800,13 @@ export default function EventPrepPage() {
                 <div className="mt-3 space-y-2">
                   {loadingDb && (
                     <p className="text-sm text-gray-400">Carregando...</p>
+                  )}
+                  {!loadingDb && sabores.length > 0 && (
+                    <div className="flex items-center gap-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                      <span className="flex-1">Recheio</span>
+                      <span className="w-20 text-right">Preço un.</span>
+                      <span className="w-16 text-right">Qtd</span>
+                    </div>
                   )}
                   {sabores.map((s) => {
                     const k = chave(s, baseAtiva);
@@ -778,6 +964,11 @@ export default function EventPrepPage() {
                     className={`font-bold ${calc.lucro < 0 ? "text-red-200" : ""}`}
                   >
                     {formatCurrency(calc.lucro)}
+                    {calc.receita > 0 && (
+                      <span className="ml-1.5 text-xs font-semibold text-purple-200">
+                        ({margem.toFixed(0)}%)
+                      </span>
+                    )}
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -796,8 +987,10 @@ export default function EventPrepPage() {
                 {justSaved ? <Check size={18} /> : <Save size={18} />}
                 {justSaved
                   ? "Orçamento salvo!"
-                  : currentId
-                    ? "Atualizar orçamento"
+                  : aberto
+                    ? alterado
+                      ? "Salvar alterações"
+                      : "Orçamento salvo"
                     : "Salvar orçamento"}
               </button>
             </div>
@@ -907,51 +1100,71 @@ export default function EventPrepPage() {
                         <p className="text-xs text-gray-400 uppercase">{un}</p>
                       </div>
                       <div className="col-span-4 md:col-span-2 md:text-right text-sm font-medium text-gray-800">
+                        <span className="md:hidden block text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                          Necessário
+                        </span>
                         {formatQty(l.need)}{" "}
                         <span className="text-xs text-gray-400">{un}</span>
                       </div>
-                      <div className="col-span-4 md:col-span-2 relative">
+                      <label className="col-span-4 md:col-span-2 block">
+                        <span className="md:hidden block text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                          Embalagem
+                        </span>
+                        <span className="relative block">
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={precos[id]?.tam ?? String(l.tam)}
+                            onChange={(e) =>
+                              setPreco(id, { tam: onlyNumber(e.target.value) })
+                            }
+                            placeholder="Tamanho"
+                            title={`Quanto vem em cada embalagem (em ${un})`}
+                            className={`w-full pr-9 ${inputBase}`}
+                          />
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none">
+                            {un}
+                          </span>
+                        </span>
+                      </label>
+                      <label className="col-span-4 md:col-span-2 block">
+                        <span className="md:hidden block text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                          Preço emb.
+                        </span>
                         <input
                           type="text"
                           inputMode="decimal"
-                          value={precos[id]?.tam ?? String(l.tam)}
+                          value={precos[id]?.preco ?? ""}
                           onChange={(e) =>
-                            setPreco(id, { tam: onlyNumber(e.target.value) })
+                            setPreco(id, { preco: onlyNumber(e.target.value) })
                           }
-                          placeholder="Tamanho"
-                          title={`Quanto vem em cada embalagem (em ${un})`}
-                          className={`w-full pr-9 ${inputBase}`}
+                          placeholder="R$"
+                          className={`w-full ${inputBase} ${
+                            l.need > 0 && l.preco <= 0 ? "ring-2 ring-orange-300" : ""
+                          }`}
                         />
-                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none">
-                          {un}
+                      </label>
+                      <label className="col-span-6 md:col-span-2 block">
+                        <span className="md:hidden block text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                          Qtd a comprar
                         </span>
-                      </div>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        value={precos[id]?.preco ?? ""}
-                        onChange={(e) =>
-                          setPreco(id, { preco: onlyNumber(e.target.value) })
-                        }
-                        placeholder="R$"
-                        className={`col-span-4 md:col-span-2 ${inputBase}`}
-                      />
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={precos[id]?.qtdComprar ?? ""}
-                        onChange={(e) =>
-                          setPreco(id, {
-                            qtdComprar: e.target.value.replace(/[^\d]/g, ""),
-                          })
-                        }
-                        placeholder={`${l.pacotesAuto} (auto)`}
-                        title="Deixe vazio para usar o cálculo automático"
-                        className={`col-span-6 md:col-span-2 ${inputBase} ${
-                          l.manual ? "ring-2 ring-purple-300 font-semibold" : ""
-                        }`}
-                      />
-                      <div className="col-span-6 md:col-span-2 text-right font-bold text-gray-900 text-sm">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={precos[id]?.qtdComprar ?? ""}
+                          onChange={(e) =>
+                            setPreco(id, {
+                              qtdComprar: e.target.value.replace(/[^\d]/g, ""),
+                            })
+                          }
+                          placeholder={`${l.pacotesAuto} (auto)`}
+                          title="Deixe vazio para usar o cálculo automático"
+                          className={`w-full ${inputBase} ${
+                            l.manual ? "ring-2 ring-purple-300 font-semibold" : ""
+                          }`}
+                        />
+                      </label>
+                      <div className="col-span-6 md:col-span-2 text-right font-bold text-gray-900 text-sm self-end md:self-center pb-2 md:pb-0">
                         {formatCurrency(l.compra)}
                       </div>
                     </div>
@@ -961,22 +1174,12 @@ export default function EventPrepPage() {
 
               {/* Rodapé */}
               <div className="flex items-center justify-between px-6 py-4 border-t border-gray-100 bg-gray-50/50 rounded-b-2xl">
-                <div className="flex gap-4">
-                  <button
-                    onClick={clearAll}
-                    className="text-sm text-gray-400 hover:text-red-600 transition-colors"
-                  >
-                    Limpar quantidades
-                  </button>
-                  {currentId && (
-                    <button
-                      onClick={resetForm}
-                      className="text-sm text-gray-400 hover:text-[#7C3AED] transition-colors"
-                    >
-                      Novo orçamento
-                    </button>
-                  )}
-                </div>
+                <button
+                  onClick={clearAll}
+                  className="text-sm text-gray-400 hover:text-red-600 transition-colors"
+                >
+                  Limpar quantidades
+                </button>
                 <div className="text-right">
                   <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider mr-3">
                     Total
@@ -995,6 +1198,10 @@ export default function EventPrepPage() {
                   <FolderOpen className="text-[#7C3AED]" size={20} />
                   Orçamentos salvos
                 </h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  Ficam no banco: aparecem em qualquer aparelho em que você
+                  estiver logado.
+                </p>
               </div>
               <div className="p-2 space-y-1">
                 {saved.length === 0 && (
@@ -1042,14 +1249,19 @@ export default function EventPrepPage() {
                       <span className="font-bold text-[#6B21A8]">
                         {formatCurrency(b.total)}
                       </span>
-                      {!b.legado && (
-                        <button
-                          onClick={() => openBudget(b)}
-                          className="px-3 py-1.5 text-xs font-semibold text-[#7C3AED] bg-purple-100 rounded-lg hover:bg-purple-200 transition-colors"
-                        >
-                          Abrir
-                        </button>
-                      )}
+                      {!b.legado &&
+                        (b.id === currentId ? (
+                          <span className="px-3 py-1.5 text-xs font-semibold text-gray-500">
+                            Aberto
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => openBudget(b)}
+                            className="px-3 py-1.5 text-xs font-semibold text-[#7C3AED] bg-purple-100 rounded-lg hover:bg-purple-200 transition-colors"
+                          >
+                            Abrir
+                          </button>
+                        ))}
                       <button
                         onClick={() => deleteBudget(b.id)}
                         className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"

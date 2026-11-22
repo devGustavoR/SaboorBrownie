@@ -3,7 +3,7 @@
 import { supabase } from "@/lib/supabase";
 import { ArrowRight, ChefHat, Loader2, Lock, User } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -11,6 +11,13 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+
+  // já entrou neste aparelho: vai direto para o painel
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) router.replace("/dashboard");
+    });
+  }, [router]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -102,6 +109,7 @@ export default function LoginPage() {
                       onChange={(e) => setEmail(e.target.value)}
                       className="block w-full pl-11 pr-4 py-3.5 border border-gray-200 rounded-xl text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-[#6B21A8]/20 focus:border-[#6B21A8] transition-all bg-gray-50 focus:bg-white text-base"
                       placeholder="seu@email.com"
+                      autoComplete="email"
                       required
                     />
                   </div>
@@ -126,33 +134,17 @@ export default function LoginPage() {
                       onChange={(e) => setPassword(e.target.value)}
                       className="block w-full pl-11 pr-4 py-3.5 border border-gray-200 rounded-xl text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-[#6B21A8]/20 focus:border-[#6B21A8] transition-all bg-gray-50 focus:bg-white text-base"
                       placeholder="••••••••"
+                      autoComplete="current-password"
                       required
                     />
                   </div>
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center">
-                  <input
-                    id="remember-me"
-                    type="checkbox"
-                    className="h-4 w-4 text-[#6B21A8] focus:ring-[#6B21A8] border-gray-300 rounded cursor-pointer"
-                  />
-                  <label
-                    htmlFor="remember-me"
-                    className="ml-2 block text-sm text-gray-600 cursor-pointer select-none"
-                  >
-                    Lembrar de mim
-                  </label>
-                </div>
-                <a
-                  href="#"
-                  className="text-sm font-bold text-[#6B21A8] hover:text-purple-700 transition-colors"
-                >
-                  Esqueceu a senha?
-                </a>
-              </div>
+              <p className="text-xs text-gray-400">
+                O acesso fica salvo neste aparelho até você sair pelo menu da
+                conta.
+              </p>
 
               <button
                 type="submit"

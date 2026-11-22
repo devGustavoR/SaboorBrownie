@@ -1,313 +1,323 @@
 "use client";
 
+import { dinheiro, ehMassa, nomeSabor, num } from "@/lib/sabores";
 import { supabase } from "@/lib/supabase";
 import {
-  CheckCircle,
+  BarChart3,
+  CalendarDays,
+  Loader2,
   Package,
   Plus,
-  ShoppingCart,
+  Receipt,
+  Store,
+  TrendingDown,
   TrendingUp,
-  UtensilsCrossed,
+  Undo2,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useState } from "react";
 
-// --- Configuração Visual e de Metadados ---
-const FLAVOR_METADATA: Record<
-  string,
-  { label: string; desc: string; color: string }
-> = {
-  TRADICIONAL: {
-    label: "Tradicional",
-    desc: "Clássico de chocolate nobre",
-    color: "bg-amber-100 text-amber-800",
-  },
-  NINHO: {
-    label: "Ninho",
-    desc: "Creme de leite ninho",
-    color: "bg-yellow-100 text-yellow-800",
-  },
-  BRIGADEIRO: {
-    label: "Brigadeiro",
-    desc: "Cobertura cremosa intensa",
-    color: "bg-amber-200 text-amber-900",
-  },
-  MARACUJA: {
-    label: "Maracujá",
-    desc: "Trufado de maracujá",
-    color: "bg-yellow-200 text-yellow-900",
-  },
-  MORANGO: {
-    label: "Morango",
-    desc: "Geleia de morango",
-    color: "bg-rose-100 text-rose-800",
-  },
-  MISTO: {
-    label: "Misto",
-    desc: "Dois sabores em um",
-    color: "bg-purple-100 text-purple-800",
-  },
+interface Preco {
+  tp_sabor: string;
+  vl_preco: number;
+}
+
+interface Lote {
+  cd_lote: string;
+  tp_sabor: string;
+  qt_produzida: number;
+  ts_producao: string;
+}
+
+interface Resumo {
+  hojeValor: number;
+  hojeUnidades: number;
+  mesValor: number;
+  mesUnidades: number;
+  mesDespesas: number;
+  hojePorSabor: Record<string, number>;
+}
+
+const CORES: Record<string, string> = {
+  TRADICIONAL: "bg-amber-100 text-amber-800",
+  NINHO: "bg-yellow-100 text-yellow-800",
+  BRIGADEIRO: "bg-orange-100 text-orange-900",
+  MARACUJA: "bg-lime-100 text-lime-800",
+  MORANGO: "bg-rose-100 text-rose-800",
+  MISTO: "bg-purple-100 text-purple-800",
 };
 
+const saudacao = () => {
+  const h = new Date().getHours();
+  return h < 12 ? "Bom dia" : h < 18 ? "Boa tarde" : "Boa noite";
+};
+
+const inicioDoDia = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+};
+const inicioDoMes = () => {
+  const d = inicioDoDia();
+  d.setDate(1);
+  return d;
+};
+
+const ATALHOS = [
+  { href: "/dashboard/evento", label: "Planejar evento", desc: "Orçamento e compras", icon: CalendarDays, cor: "bg-purple-100 text-[#6B21A8]" },
+  { href: "/dashboard/dia-evento", label: "Dia do Evento", desc: "PDV e roleta", icon: Store, cor: "bg-green-100 text-green-700" },
+  { href: "/dashboard/estoque", label: "Estoque", desc: "Produção e lotes", icon: Package, cor: "bg-blue-100 text-blue-700" },
+  { href: "/dashboard/custos", label: "Lançar gasto", desc: "Notas e despesas", icon: Receipt, cor: "bg-orange-100 text-orange-700" },
+];
+
 export default function DashboardPage() {
-  // --- States de Lógica ---
-  const [loading, setLoading] = useState(true);
-  const [processingSale, setProcessingSale] = useState(false);
-  const [profit, setProfit] = useState(0);
-  const [salesCount, setSalesCount] = useState(0);
-  const [products, setProducts] = useState<any[]>([]);
+  const [carregando, setCarregando] = useState(true);
+  const [precos, setPrecos] = useState<Preco[]>([]);
+  const [lotes, setLotes] = useState<Lote[]>([]);
+  const [vendidosLote, setVendidosLote] = useState<Record<string, number>>({});
+  const [resumo, setResumo] = useState<Resumo | null>(null);
+  const [vendendo, setVendendo] = useState<string | null>(null);
+  const [ultima, setUltima] = useState<{ id: string; sabor: string } | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
 
-  // --- Lógica de Negócios ---
-  const fetchData = async () => {
-    setLoading(true);
+  const carregar = useCallback(async () => {
+    const mes = inicioDoMes().toISOString();
+    const hoje = inicioDoDia().getTime();
+    const [rp, rl, rv, rvm, rd] = await Promise.all([
+      supabase.from("TABELA_PRECOS").select("tp_sabor, vl_preco"),
+      supabase.from("LOTES").select("cd_lote, tp_sabor, qt_produzida, ts_producao").order("ts_producao"),
+      supabase.from("VENDAS").select("cd_lote").not("cd_lote", "is", null),
+      supabase.from("VENDAS").select("vl_preco_venda, ts_venda, LOTES ( tp_sabor )").gte("ts_venda", mes),
+      supabase.from("DESPESAS").select("vl_valor").gte("ts_despesa", mes),
+    ]);
 
-    // 1. Buscar Preços Configurados
-    const { data: precos } = await supabase.from("TABELA_PRECOS").select("*");
-    if (precos) setProducts(precos);
+    setPrecos(
+      (rp.data ?? [])
+        .map((p) => ({ tp_sabor: p.tp_sabor as string, vl_preco: num(p.vl_preco) }))
+        .filter((p) => !ehMassa(p.tp_sabor))
+        .sort((a, b) => nomeSabor(a.tp_sabor).localeCompare(nomeSabor(b.tp_sabor))),
+    );
+    setLotes((rl.data ?? []) as Lote[]);
+    const porLote: Record<string, number> = {};
+    for (const v of rv.data ?? []) porLote[v.cd_lote] = (porLote[v.cd_lote] ?? 0) + 1;
+    setVendidosLote(porLote);
 
-    // 2. Buscar Vendas (Faturamento)
-    const { data: vendas } = await supabase
-      .from("VENDAS")
-      .select("vl_preco_venda");
-
-    // 3. Buscar Despesas
-    const { data: despesas } = await supabase
-      .from("DESPESAS")
-      .select("vl_valor");
-
-    if (vendas && despesas) {
-      const totalVendas = vendas.reduce(
-        (acc, curr) => acc + (curr.vl_preco_venda || 0),
-        0,
-      );
-      const totalDespesas = despesas.reduce(
-        (acc, curr) => acc + (curr.vl_valor || 0),
-        0,
-      );
-      const lucroLiquido = totalVendas - totalDespesas;
-
-      setProfit(lucroLiquido);
-      setSalesCount(vendas.length);
+    const r: Resumo = {
+      hojeValor: 0,
+      hojeUnidades: 0,
+      mesValor: 0,
+      mesUnidades: 0,
+      mesDespesas: (rd.data ?? []).reduce((a, d) => a + num(d.vl_valor), 0),
+      hojePorSabor: {},
+    };
+    for (const v of rvm.data ?? []) {
+      const valor = num(v.vl_preco_venda);
+      r.mesValor += valor;
+      r.mesUnidades += 1;
+      if (new Date(v.ts_venda).getTime() >= hoje) {
+        r.hojeValor += valor;
+        r.hojeUnidades += 1;
+        const l = (Array.isArray(v.LOTES) ? v.LOTES[0] : v.LOTES) as { tp_sabor?: string } | null;
+        const s = l?.tp_sabor ?? "?";
+        r.hojePorSabor[s] = (r.hojePorSabor[s] ?? 0) + 1;
+      }
     }
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    fetchData();
+    setResumo(r);
+    setCarregando(false);
   }, []);
 
-  const handleSale = async (flavor: string, price: number) => {
-    setProcessingSale(true);
+  useEffect(() => {
+    const t = setTimeout(() => void carregar(), 0);
+    return () => clearTimeout(t);
+  }, [carregar]);
 
-    // 1. Tenta achar lote ATIVO (FIFO)
-    const { data: lotes } = await supabase
-      .from("LOTES")
-      .select("cd_lote")
-      .eq("tp_sabor", flavor)
-      .order("ts_producao", { ascending: true });
+  const mostrar = (msg: string) => {
+    setAviso(msg);
+    setTimeout(() => setAviso(null), 2500);
+  };
 
-    let loteId = null;
-    if (lotes && lotes.length > 0) {
-      loteId = lotes[0].cd_lote;
-    }
+  // disponível de cada sabor = produzido nos lotes − vendido desses lotes
+  const disponivel = (sabor: string) =>
+    lotes
+      .filter((l) => l.tp_sabor === sabor)
+      .reduce((a, l) => a + Math.max(l.qt_produzida - (vendidosLote[l.cd_lote] ?? 0), 0), 0);
 
-    // 2. Vende
-    const { error } = await supabase
+  // Venda avulsa: 1 unidade, sai do lote mais antigo que ainda tem brownie
+  const vender = async (p: Preco) => {
+    setVendendo(p.tp_sabor);
+    const doSabor = lotes.filter((l) => l.tp_sabor === p.tp_sabor);
+    const lote =
+      doSabor.find((l) => l.qt_produzida - (vendidosLote[l.cd_lote] ?? 0) > 0) ??
+      doSabor[doSabor.length - 1];
+    const { data, error } = await supabase
       .from("VENDAS")
-      .insert([{ vl_preco_venda: price, cd_lote: loteId }]);
-
-    if (!error) {
-      fetchData();
-    } else {
-      alert("Erro ao registrar venda.");
-      console.error(error);
+      .insert([{ vl_preco_venda: p.vl_preco, cd_lote: lote?.cd_lote ?? null, nm_cliente: "Venda avulsa" }])
+      .select("cd_venda")
+      .single();
+    setVendendo(null);
+    if (error) {
+      alert("Não foi possível registrar a venda.");
+      return;
     }
-    setProcessingSale(false);
+    setUltima({ id: data.cd_venda as string, sabor: p.tp_sabor });
+    mostrar(`1 ${nomeSabor(p.tp_sabor)} vendido${lote ? "" : " (sem lote cadastrado)"}`);
+    void carregar();
   };
 
-  const formatCurrency = (value: number) => {
-    return value.toLocaleString("pt-BR", {
-      style: "currency",
-      currency: "BRL",
-    });
+  const desfazer = async () => {
+    if (!ultima) return;
+    const { error } = await supabase.from("VENDAS").delete().eq("cd_venda", ultima.id);
+    if (error) {
+      alert("Não foi possível desfazer.");
+      return;
+    }
+    mostrar(`Venda de ${nomeSabor(ultima.sabor)} desfeita`);
+    setUltima(null);
+    void carregar();
   };
+
+  const saldoMes = (resumo?.mesValor ?? 0) - (resumo?.mesDespesas ?? 0);
+  const mesNome = new Date().toLocaleDateString("pt-BR", { month: "long" });
 
   return (
-    <div className="min-h-screen flex flex-col font-sans bg-[#F3E8FF] text-gray-800">
-      {/* --- MAIN CONTENT --- */}
-      <main className="flex-grow container max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-        {/* Header Texto */}
-        <div className="mb-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
-          <h1 className="font-serif text-4xl text-gray-900 mb-2">
-            Bom dia,{" "}
+    <div className="min-h-screen font-sans bg-[#F3E8FF] text-gray-800">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+        <div>
+          <h1 className="font-serif text-4xl text-gray-900 mb-1">
+            {saudacao()},{" "}
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#6B21A8] to-purple-500 font-bold">
               Chef!
             </span>
           </h1>
           <p className="text-gray-500">
-            Aqui está o resumo das vendas de hoje.
+            Resumo de hoje e de {mesNome}.
           </p>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          {/* --- COLUNA ESQUERDA: Status & Ações Rápidas (5 cols) --- */}
-          <div className="lg:col-span-5 flex flex-col gap-6">
-            {/* Card de Lucro (Gradient) - Mantive o roxo pois é a cor da marca, mas o resto é claro */}
-            <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#6B21A8] via-purple-800 to-indigo-900 shadow-2xl shadow-purple-900/40 text-white min-h-[360px] flex flex-col justify-between p-8 group transition-all duration-500 hover:shadow-purple-700/50 hover:-translate-y-1">
-              {/* Decorative Circles */}
-              <div className="absolute top-0 right-0 -mr-16 -mt-16 w-64 h-64 rounded-full bg-white opacity-5 group-hover:scale-110 transition-transform duration-700"></div>
-              <div className="absolute bottom-0 left-0 -ml-16 -mb-16 w-48 h-48 rounded-full bg-purple-400 opacity-10 group-hover:scale-110 transition-transform duration-700 delay-100"></div>
-
-              <div className="relative z-10">
-                <div className="flex items-center justify-between mb-4">
-                  <span className="uppercase tracking-wider text-xs font-semibold text-purple-200">
-                    Saldo de Caixa
-                  </span>
-                  <div className="bg-white/20 backdrop-blur-sm p-1.5 rounded-lg">
-                    <TrendingUp size={16} className="text-white" />
-                  </div>
-                </div>
-
-                <h2 className="font-serif text-5xl lg:text-6xl font-bold mb-4 tracking-tight">
-                  {loading ? "..." : formatCurrency(profit)}
-                </h2>
-
-                <div className="inline-flex items-center bg-white/10 backdrop-blur-md rounded-full px-3 py-1 text-sm text-purple-100 border border-white/10">
-                  <CheckCircle size={14} className="mr-1.5" />
-                  {salesCount} vendas realizadas hoje
-                </div>
-              </div>
-
-              {/* Mini Gráfico Decorativo */}
-              <div className="relative z-10 mt-6">
-                <div className="flex justify-between items-end mb-2 text-purple-200 text-xs uppercase font-medium">
-                  <span>Performance</span>
-                  <span>Atualizado agora</span>
-                </div>
-                <div className="flex items-end space-x-2 h-20">
-                  <div className="w-full bg-white/10 rounded-t-sm h-[40%]"></div>
-                  <div className="w-full bg-white/10 rounded-t-sm h-[60%]"></div>
-                  <div className="w-full bg-white/10 rounded-t-sm h-[30%]"></div>
-                  <div className="w-full bg-white/10 rounded-t-sm h-[80%]"></div>
-                  <div className="w-full bg-white/30 rounded-t-sm h-full shadow-[0_0_15px_rgba(255,255,255,0.3)]"></div>
-                </div>
-              </div>
-            </div>
-
-            {/* Botões de Ação Rápida */}
-            <div className="grid grid-cols-2 gap-4">
-              <button className="bg-white p-6 rounded-2xl shadow-sm border border-purple-100 flex flex-col justify-center items-center text-center hover:border-[#6B21A8]/30 hover:shadow-md transition-all group">
-                <div className="bg-green-100 p-3 rounded-full mb-3 group-hover:scale-110 transition-transform">
-                  <ShoppingCart size={24} className="text-green-600" />
-                </div>
-                <span className="text-sm font-medium text-gray-500 group-hover:text-[#6B21A8] transition-colors">
-                  Relatório Detalhado
-                </span>
-              </button>
-              <button className="bg-white p-6 rounded-2xl shadow-sm border border-purple-100 flex flex-col justify-center items-center text-center hover:border-[#6B21A8]/30 hover:shadow-md transition-all group">
-                <div className="bg-blue-100 p-3 rounded-full mb-3 group-hover:scale-110 transition-transform">
-                  <Package size={24} className="text-blue-600" />
-                </div>
-                <span className="text-sm font-medium text-gray-500 group-hover:text-[#6B21A8] transition-colors">
-                  Atualizar Estoque
-                </span>
-              </button>
-            </div>
+        {/* Números */}
+        <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="col-span-2 lg:col-span-1 rounded-2xl bg-gradient-to-br from-[#6B21A8] to-indigo-900 text-white p-5 shadow-xl shadow-purple-900/20">
+            <p className="text-xs uppercase tracking-wider text-purple-200 font-semibold">Vendido hoje</p>
+            <p className="text-3xl font-bold mt-1">{carregando ? "…" : dinheiro(resumo?.hojeValor ?? 0)}</p>
+            <p className="text-sm text-purple-200 mt-1">
+              {resumo?.hojeUnidades ?? 0} {resumo?.hojeUnidades === 1 ? "brownie" : "brownies"}
+            </p>
           </div>
+          <div className="rounded-2xl bg-white border border-purple-100 p-5">
+            <p className="text-xs uppercase tracking-wider text-gray-400 font-semibold">Vendas no mês</p>
+            <p className="text-2xl font-bold text-gray-900 mt-1">{carregando ? "…" : dinheiro(resumo?.mesValor ?? 0)}</p>
+            <p className="text-xs text-gray-500 mt-1">{resumo?.mesUnidades ?? 0} brownies</p>
+          </div>
+          <div className="rounded-2xl bg-white border border-purple-100 p-5">
+            <p className="text-xs uppercase tracking-wider text-gray-400 font-semibold">Gastos no mês</p>
+            <p className="text-2xl font-bold text-gray-900 mt-1">{carregando ? "…" : dinheiro(resumo?.mesDespesas ?? 0)}</p>
+            <Link href="/dashboard/custos" className="text-xs text-[#7C3AED] hover:underline mt-1 inline-block">
+              Lançar gasto
+            </Link>
+          </div>
+          <div className="col-span-2 lg:col-span-1 rounded-2xl bg-white border border-purple-100 p-5">
+            <p className="text-xs uppercase tracking-wider text-gray-400 font-semibold">Saldo do mês</p>
+            <p className={`text-2xl font-bold mt-1 flex items-center gap-2 ${saldoMes >= 0 ? "text-green-700" : "text-red-600"}`}>
+              {saldoMes >= 0 ? <TrendingUp size={20} /> : <TrendingDown size={20} />}
+              {carregando ? "…" : dinheiro(saldoMes)}
+            </p>
+            <Link href="/dashboard/analises" className="text-xs text-[#7C3AED] hover:underline mt-1 inline-flex items-center gap-1">
+              <BarChart3 size={12} /> Ver análises
+            </Link>
+          </div>
+        </section>
 
-          {/* --- COLUNA DIREITA: Lista de Produtos (7 cols) --- */}
-          <div className="lg:col-span-7">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xl font-bold text-gray-800 font-serif">
-                Ponto de Venda (PDV)
-              </h3>
-              <a
-                href="#"
-                className="text-sm text-[#6B21A8] hover:underline font-medium"
+        {/* Atalhos */}
+        <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {ATALHOS.map((a) => (
+            <Link
+              key={a.href}
+              href={a.href}
+              className="bg-white rounded-2xl p-5 border border-purple-100 hover:border-purple-300 hover:shadow-md transition-all flex items-center gap-4 group"
+            >
+              <span className={`p-3 rounded-xl ${a.cor} group-hover:scale-110 transition-transform`}>
+                <a.icon size={22} />
+              </span>
+              <span className="min-w-0">
+                <span className="block font-bold text-gray-900">{a.label}</span>
+                <span className="block text-xs text-gray-500">{a.desc}</span>
+              </span>
+            </Link>
+          ))}
+        </section>
+
+        {/* Venda avulsa */}
+        <section className="bg-white rounded-2xl border border-purple-100 p-6">
+          <div className="flex flex-wrap items-end justify-between gap-3 mb-5">
+            <div>
+              <h2 className="text-xl font-bold text-gray-900">Venda avulsa</h2>
+              <p className="text-sm text-gray-500">
+                Para vendas fora de evento: cada toque registra 1 brownie e dá
+                baixa no lote mais antigo do sabor. Em evento, use o{" "}
+                <Link href="/dashboard/dia-evento" className="text-[#7C3AED] hover:underline">
+                  Dia do Evento
+                </Link>
+                .
+              </p>
+            </div>
+            {ultima && (
+              <button
+                onClick={desfazer}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gray-100 text-sm font-semibold text-gray-600 hover:bg-gray-200"
               >
-                Gerenciar Produtos
-              </a>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {/* Loading State */}
-              {loading &&
-                products.length === 0 &&
-                [1, 2, 3, 4].map((i) => (
-                  <div
-                    key={i}
-                    className="h-32 rounded-2xl bg-white/50 animate-pulse border border-white"
-                  ></div>
-                ))}
-
-              {/* Empty State */}
-              {!loading && products.length === 0 && (
-                <div className="col-span-2 text-center py-10 text-gray-400 border-2 border-dashed border-gray-300 rounded-2xl bg-white/30">
-                  Nenhum produto configurado na tabela TABELA_PRECOS.
-                </div>
-              )}
-
-              {/* Product List */}
-              {products.map((prod) => {
-                const meta = FLAVOR_METADATA[prod.tp_sabor] || {
-                  label: prod.tp_sabor,
-                  desc: "Sabor especial",
-                  color: "bg-gray-100 text-gray-600",
-                };
-
-                return (
-                  <div
-                    key={prod.tp_sabor}
-                    className="group bg-white rounded-2xl p-4 shadow-sm hover:shadow-lg border border-transparent hover:border-[#6B21A8]/20 transition-all duration-300 flex items-center gap-4 hover:-translate-y-1"
-                  >
-                    {/* Placeholder de Imagem Dinâmico */}
-                    <div
-                      className={`relative w-20 h-20 flex-shrink-0 rounded-xl overflow-hidden shadow-inner flex items-center justify-center ${meta.color}`}
-                    >
-                      <UtensilsCrossed size={32} className="opacity-40" />
-                    </div>
-
-                    <div className="flex-grow">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <h4 className="font-bold text-gray-900 text-lg font-serif leading-tight">
-                            {meta.label}
-                          </h4>
-                          <p className="text-xs text-gray-500 mb-2 mt-0.5">
-                            {meta.desc}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="flex justify-between items-end mt-2">
-                        <span className="text-lg font-bold text-[#6B21A8]">
-                          {formatCurrency(prod.vl_preco)}
-                        </span>
-
-                        <button
-                          onClick={() =>
-                            handleSale(prod.tp_sabor, prod.vl_preco)
-                          }
-                          disabled={processingSale}
-                          className="w-8 h-8 rounded-full bg-gray-100 hover:bg-[#6B21A8] hover:text-white flex items-center justify-center transition-all disabled:opacity-50 disabled:cursor-not-allowed active:scale-90"
-                        >
-                          <Plus size={16} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                <Undo2 size={16} /> Desfazer última
+              </button>
+            )}
           </div>
-        </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {carregando &&
+              [1, 2, 3].map((i) => <div key={i} className="h-24 rounded-2xl bg-gray-100 animate-pulse" />)}
+            {!carregando && precos.length === 0 && (
+              <p className="col-span-full text-center py-8 text-gray-400">
+                Nenhum preço cadastrado. Defina em{" "}
+                <Link href="/dashboard/settings" className="text-[#7C3AED] hover:underline">
+                  Configurações
+                </Link>
+                .
+              </p>
+            )}
+            {precos.map((p) => {
+              const disp = disponivel(p.tp_sabor);
+              const hoje = resumo?.hojePorSabor[p.tp_sabor] ?? 0;
+              return (
+                <div key={p.tp_sabor} className="flex items-center gap-4 rounded-2xl p-4 bg-gray-50 border border-transparent hover:border-purple-200 transition">
+                  <span className={`w-14 h-14 rounded-xl flex items-center justify-center font-bold text-lg ${CORES[p.tp_sabor] ?? "bg-gray-100 text-gray-600"}`}>
+                    {nomeSabor(p.tp_sabor).charAt(0)}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-gray-900 truncate">{nomeSabor(p.tp_sabor)}</p>
+                    <p className="text-sm font-semibold text-[#6B21A8]">{dinheiro(p.vl_preco)}</p>
+                    <p className={`text-xs ${disp <= 0 ? "text-orange-600" : "text-gray-400"}`}>
+                      {disp > 0 ? `${disp} em estoque` : "sem estoque nos lotes"}
+                      {hoje > 0 ? ` · ${hoje} hoje` : ""}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => vender(p)}
+                    disabled={vendendo !== null}
+                    className="w-12 h-12 rounded-xl bg-[#7C3AED] text-white flex items-center justify-center hover:bg-[#6B21A8] active:scale-90 transition disabled:opacity-50"
+                    aria-label={`Vender 1 ${nomeSabor(p.tp_sabor)}`}
+                  >
+                    {vendendo === p.tp_sabor ? <Loader2 size={20} className="animate-spin" /> : <Plus size={22} />}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
       </main>
 
-      {/* --- FOOTER --- */}
-      <footer className="mt-auto border-t border-purple-100 bg-white py-6">
-        <div className="max-w-7xl mx-auto px-4 text-center text-sm text-gray-400">
-          © 2026 Saboor Brownie System. All rights reserved.
+      {aviso && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-gray-900 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-xl">
+          {aviso}
         </div>
-      </footer>
+      )}
     </div>
   );
 }

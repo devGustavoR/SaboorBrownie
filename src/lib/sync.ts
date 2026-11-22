@@ -5,7 +5,12 @@
 import { supabase } from "@/lib/supabase";
 import { useSyncExternalStore } from "react";
 
-export type Tabela = "EVENTOS" | "EVENTO_VENDAS" | "ROLETA_SORTEIOS" | "VENDAS";
+export type Tabela =
+  | "EVENTOS"
+  | "EVENTO_VENDAS"
+  | "ROLETA_SORTEIOS"
+  | "VENDAS"
+  | "ORCAMENTOS";
 
 export type Operacao =
   | {
@@ -151,8 +156,8 @@ export const processarFila = (): Promise<void> => {
     const logado = !!data.session;
     while (fila.length > 0) {
       const op = fila[0];
-      // tabelas com dados de clientes exigem login (RLS)
-      if (!logado && op.tabela !== "VENDAS") {
+      // todas as tabelas exigem login (RLS)
+      if (!logado) {
         emitir({ semLogin: true, erro: "Entre com seu login para salvar no banco." });
         break;
       }

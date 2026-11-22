@@ -1,6 +1,7 @@
 "use client";
 
 import { RoletaTeste } from "@/components/RoletaTeste";
+import { ROTULO_SABOR, SABORES } from "@/lib/sabores";
 import { supabase } from "@/lib/supabase";
 import {
   Check,
@@ -19,23 +20,8 @@ import {
 import { useEffect, useState } from "react";
 
 // --- CONSTANTES ---
-const FLAVORS = [
-  "TRADICIONAL",
-  "NINHO",
-  "BRIGADEIRO",
-  "MARACUJA",
-  "MORANGO",
-  "MISTO",
-];
-
-const FLAVOR_LABELS: Record<string, string> = {
-  TRADICIONAL: "Tradicional",
-  NINHO: "Ninho",
-  BRIGADEIRO: "Brigadeiro",
-  MARACUJA: "Maracujá",
-  MORANGO: "Morango",
-  MISTO: "Misto",
-};
+const FLAVORS: string[] = [...SABORES];
+const FLAVOR_LABELS = ROTULO_SABOR;
 
 // Massa compartilhada por todos os sabores (a receita do brownie é sempre a mesma);
 // cada sabor guarda só os ingredientes do recheio.
@@ -74,16 +60,48 @@ const saveYield = (flavor: string, value: number) => {
   }
 };
 
+// kg/L são digitados em g/ml nas receitas
+const isBigUnit = (unit: string) =>
+  ["kg", "l"].includes((unit || "").toLowerCase());
+
+interface Materia {
+  cd_materia: string;
+  nm_item: string;
+  ds_unidade_medida: string;
+}
+
+interface ItemReceita {
+  cd_ficha: string;
+  cd_materia: string;
+  qt_uso_por_unidade: number;
+  MATERIAS_PRIMAS: { nm_item: string; ds_unidade_medida: string };
+}
+
+const doBanco = (data: unknown[] | null): ItemReceita[] =>
+  ((data ?? []) as ItemReceita[]).map((i) => ({
+    ...i,
+    qt_uso_por_unidade: Number(i.qt_uso_por_unidade) || 0,
+    MATERIAS_PRIMAS: i.MATERIAS_PRIMAS ?? { nm_item: "(insumo apagado)", ds_unidade_medida: "" },
+  }));
+
+const paraNumero = (v: string) => {
+  const n = parseFloat(v.replace(",", "."));
+  return Number.isFinite(n) ? n : 0;
+};
+
 export default function SettingsPage() {
   // --- STATES ---
   const [loadingPrices, setLoadingPrices] = useState(true);
-  const [prices, setPrices] = useState<Record<string, number>>({});
-  const [savingPrice, setSavingPrice] = useState<string | null>(null); // Qual sabor está salvando
+  // preço como texto para aceitar vírgula ("7,50"); salvo = o que está no banco
+  const [prices, setPrices] = useState<Record<string, string>>({});
+  const [precosSalvos, setPrecosSalvos] = useState<Record<string, string>>({});
+  const [savingPrice, setSavingPrice] = useState<string | null>(null);
+  const [precoOk, setPrecoOk] = useState<string | null>(null);
 
   // Receita
   const [selectedFlavor, setSelectedFlavor] = useState(BASE);
-  const [materials, setMaterials] = useState<any[]>([]);
-  const [recipeItems, setRecipeItems] = useState<any[]>([]);
+  const [materials, setMaterials] = useState<Materia[]>([]);
+  const [recipeItems, setRecipeItems] = useState<ItemReceita[]>([]);
 
   // Form Ingrediente
   const [selectedMaterialId, setSelectedMaterialId] = useState("");
@@ -107,19 +125,21 @@ export default function SettingsPage() {
         .from("TABELA_PRECOS")
         .select("*");
       if (pricesData) {
-        const pricesMap: Record<string, number> = {};
-        pricesData.forEach(
-          (item: any) => (pricesMap[item.tp_sabor] = item.vl_preco),
-        );
+        const pricesMap: Record<string, string> = {};
+        for (const item of pricesData as { tp_sabor: string; vl_preco: unknown }[]) {
+          const n = Number(item.vl_preco) || 0;
+          pricesMap[item.tp_sabor] = n > 0 ? n.toFixed(2).replace(".", ",") : "";
+        }
         setPrices(pricesMap);
+        setPrecosSalvos(pricesMap);
       }
 
       // 2. Materiais
       const { data: matData } = await supabase
         .from("MATERIAS_PRIMAS")
-        .select("*")
+        .select("cd_materia, nm_item, ds_unidade_medida")
         .order("nm_item");
-      if (matData) setMaterials(matData);
+      if (matData) setMaterials(matData as Materia[]);
 
       setLoadingPrices(false);
     };
@@ -132,62 +152,73 @@ export default function SettingsPage() {
     return () => clearTimeout(timer);
   }, []);
 
-  // Carregar Receita ao trocar aba
+  // Carregar Receita ao trocar aba (ignora a resposta de uma aba antiga)
   useEffect(() => {
-    const fetchRecipe = async () => {
-      const { data } = await supabase
-        .from("FICHA_TECNICA")
-        .select(`*, MATERIAS_PRIMAS ( nm_item, ds_unidade_medida )`)
-        .eq("tp_sabor", selectedFlavor);
-      if (data) setRecipeItems(data);
+    let vivo = true;
+    supabase
+      .from("FICHA_TECNICA")
+      .select(`*, MATERIAS_PRIMAS ( nm_item, ds_unidade_medida )`)
+      .eq("tp_sabor", selectedFlavor)
+      .then(({ data }) => {
+        if (vivo) setRecipeItems(doBanco(data));
+      });
+    return () => {
+      vivo = false;
     };
-    fetchRecipe();
   }, [selectedFlavor]);
 
   // --- AÇÕES DE PREÇO ---
   const handlePriceChange = (flavor: string, newVal: string) => {
-    setPrices((prev) => ({ ...prev, [flavor]: parseFloat(newVal) || 0 }));
+    setPrices((prev) => ({ ...prev, [flavor]: newVal.replace(/[^\d.,]/g, "") }));
   };
 
   const savePrice = async (flavor: string) => {
+    const valor = paraNumero(prices[flavor] ?? "");
+    if (valor <= 0) {
+      alert("Informe um preço maior que zero.");
+      return;
+    }
     setSavingPrice(flavor);
-    const priceToSave = prices[flavor] || 0;
-
-    await supabase
+    const { error } = await supabase
       .from("TABELA_PRECOS")
-      .upsert({ tp_sabor: flavor, vl_preco: priceToSave });
-
-    // Pequeno delay visual para feedback
-    setTimeout(() => setSavingPrice(null), 1000);
+      .upsert({ tp_sabor: flavor, vl_preco: valor });
+    setSavingPrice(null);
+    if (error) {
+      alert(`Erro ao salvar o preço.\n${error.message}`);
+      return;
+    }
+    const texto = valor.toFixed(2).replace(".", ",");
+    setPrices((prev) => ({ ...prev, [flavor]: texto }));
+    setPrecosSalvos((prev) => ({ ...prev, [flavor]: texto }));
+    setPrecoOk(flavor);
+    setTimeout(() => setPrecoOk((f) => (f === flavor ? null : f)), 1500);
   };
 
   // --- AÇÕES DE RECEITA ---
   const handleMaterialChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const id = e.target.value;
     setSelectedMaterialId(id);
-    const material = materials.find((m) => m.cd_materia == id); // == para aceitar string/number
+    const material = materials.find((m) => m.cd_materia === id);
     setSelectedUnit(material ? material.ds_unidade_medida : "");
   };
 
   const handleAddIngredient = async () => {
     if (!selectedMaterialId || !amountInput) return;
+    const digitado = paraNumero(amountInput);
+    if (digitado <= 0 || recipeYield <= 0) {
+      alert("Informe a quantidade e o rendimento.");
+      return;
+    }
+    if (
+      recipeItems.some((i) => i.cd_materia === selectedMaterialId) &&
+      !confirm("Este insumo já está na receita. Adicionar de novo (soma as quantidades)?")
+    )
+      return;
     setAddingItem(true);
 
-    // Lógica de conversão (salva unitário no banco)
-    // Se a unidade for KG/L, o usuário digita gramas/ml, mas salvamos a fração de KG
-    // Ex: 140g -> 0.140 kg -> divide por 12 (rendimento) = 0.0116 kg/unidade
-
-    let rawValue = parseFloat(amountInput);
-    if (
-      selectedUnit.toLowerCase() === "kg" ||
-      selectedUnit.toLowerCase() === "l"
-    ) {
-      // Assume que o usuário digitou gramas/ml se a unidade base for grande
-      // Mas vamos simplificar: O usuário digita na unidade base?
-      // Vamos assumir que ele digita na unidade de MEDIDA COMUM (gramas)
-      rawValue = rawValue / 1000;
-    }
-
+    // Guardamos o uso POR BROWNIE. kg/L são digitados em g/ml:
+    // 140 g de 12 brownies → 0,140 kg ÷ 12 = 0,0117 kg por brownie
+    const rawValue = isBigUnit(selectedUnit) ? digitado / 1000 : digitado;
     const valuePerUnit = rawValue / recipeYield;
 
     const { error } = await supabase.from("FICHA_TECNICA").insert([
@@ -205,23 +236,25 @@ export default function SettingsPage() {
         .from("FICHA_TECNICA")
         .select(`*, MATERIAS_PRIMAS ( nm_item, ds_unidade_medida )`)
         .eq("tp_sabor", selectedFlavor);
-      if (data) setRecipeItems(data);
+      setRecipeItems(doBanco(data));
+    } else {
+      alert(`Erro ao adicionar.\n${error.message}`);
     }
     setAddingItem(false);
   };
 
   const handleRemoveItem = async (id: string) => {
     if (!confirm("Remover este ingrediente da receita?")) return;
-    // Atualização otimista
+    const antes = recipeItems;
     setRecipeItems((prev) => prev.filter((i) => i.cd_ficha !== id));
-    await supabase.from("FICHA_TECNICA").delete().eq("cd_ficha", id);
+    const { error } = await supabase.from("FICHA_TECNICA").delete().eq("cd_ficha", id);
+    if (error) {
+      setRecipeItems(antes);
+      alert(`Não foi possível remover.\n${error.message}`);
+    }
   };
 
-  // kg/L são digitados em g/ml (mesma regra do formulário de adicionar)
-  const isBigUnit = (unit: string) =>
-    ["kg", "l"].includes((unit || "").toLowerCase());
-
-  const startEdit = (item: any) => {
+  const startEdit = (item: ItemReceita) => {
     const unit = item.MATERIAS_PRIMAS.ds_unidade_medida;
     const total = item.qt_uso_por_unidade * recipeYield;
     const shown = isBigUnit(unit) ? total * 1000 : total;
@@ -229,7 +262,7 @@ export default function SettingsPage() {
     setEditValue(String(parseFloat(shown.toFixed(2))));
   };
 
-  const handleSaveEdit = async (item: any) => {
+  const handleSaveEdit = async (item: ItemReceita) => {
     const value = parseFloat(editValue.replace(",", "."));
     if (!Number.isFinite(value) || value <= 0 || recipeYield <= 0) {
       alert("Informe uma quantidade válida.");
@@ -264,17 +297,24 @@ export default function SettingsPage() {
   const formatRecipeValue = (valUnit: number, unit: string) => {
     let total = valUnit * recipeYield;
     let label = unit;
-
-    if (unit === "kg" && total < 1) {
+    const u = (unit || "").toLowerCase();
+    if (u === "kg" && total < 1) {
       total *= 1000;
       label = "g";
     }
-    if ((unit === "l" || unit === "L") && total < 1) {
+    if (u === "l" && total < 1) {
       total *= 1000;
       label = "ml";
     }
+    return `${parseFloat(total.toFixed(2)).toLocaleString("pt-BR")} ${label}`;
+  };
 
-    return `${parseFloat(total.toFixed(2))} ${label}`;
+  // uso por brownie, em g/ml quando a unidade é kg/L
+  const porBrownie = (valUnit: number, unit: string) => {
+    const u = (unit || "").toLowerCase();
+    const v = isBigUnit(u) ? valUnit * 1000 : valUnit;
+    const label = u === "kg" ? "g" : u === "l" ? "ml" : unit;
+    return `${parseFloat(v.toFixed(2)).toLocaleString("pt-BR")} ${label}`;
   };
 
   const getIconForMaterial = (name: string) => {
@@ -311,48 +351,59 @@ export default function SettingsPage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {FLAVORS.map((flavor) => (
-              <div
-                key={flavor}
-                className="bg-[#F3F4F6] rounded-xl p-4 flex items-center justify-between border border-transparent hover:border-purple-200 transition-all group"
-              >
-                <div>
-                  <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">
-                    {FLAVOR_LABELS[flavor]}
-                  </p>
-                  <div className="flex items-center">
-                    <span className="text-gray-400 mr-1 text-sm font-medium">
-                      R$
-                    </span>
-                    <input
-                      type="number"
-                      step="0.50"
-                      value={prices[flavor] || ""}
-                      onChange={(e) =>
-                        handlePriceChange(flavor, e.target.value)
-                      }
-                      className="bg-transparent border-none p-0 text-xl font-bold text-gray-800 w-20 focus:ring-0 placeholder-gray-300"
-                      placeholder="0.00"
-                    />
-                  </div>
-                </div>
-                <button
-                  onClick={() => savePrice(flavor)}
-                  disabled={savingPrice === flavor}
-                  className={`w-10 h-10 rounded-full shadow-sm flex items-center justify-center transition-all ${
-                    savingPrice === flavor
-                      ? "bg-green-500 text-white scale-110"
-                      : "bg-white text-green-500 hover:bg-green-50"
+            {FLAVORS.map((flavor) => {
+              const alterado = (prices[flavor] ?? "") !== (precosSalvos[flavor] ?? "");
+              return (
+                <div
+                  key={flavor}
+                  className={`rounded-xl p-4 flex items-center justify-between border transition-all ${
+                    alterado ? "bg-amber-50 border-amber-200" : "bg-[#F3F4F6] border-transparent hover:border-purple-200"
                   }`}
                 >
-                  {savingPrice === flavor ? (
-                    <Check size={20} />
-                  ) : (
-                    <Save size={20} />
-                  )}
-                </button>
-              </div>
-            ))}
+                  <div>
+                    <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">
+                      {FLAVOR_LABELS[flavor]}
+                      {alterado && <span className="ml-2 normal-case text-amber-700">não salvo</span>}
+                    </p>
+                    <div className="flex items-center">
+                      <span className="text-gray-400 mr-1 text-sm font-medium">R$</span>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={prices[flavor] ?? ""}
+                        disabled={loadingPrices}
+                        onChange={(e) => handlePriceChange(flavor, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void savePrice(flavor);
+                        }}
+                        className="bg-transparent border-none p-0 text-xl font-bold text-gray-800 w-24 focus:ring-0 outline-none placeholder-gray-300"
+                        placeholder={loadingPrices ? "…" : "0,00"}
+                      />
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => savePrice(flavor)}
+                    disabled={savingPrice === flavor || !alterado}
+                    title={alterado ? "Salvar preço" : "Salvo"}
+                    className={`w-10 h-10 rounded-full shadow-sm flex items-center justify-center transition-all ${
+                      precoOk === flavor
+                        ? "bg-green-500 text-white scale-110"
+                        : alterado
+                          ? "bg-[#7C3AED] text-white hover:bg-[#6B21A8]"
+                          : "bg-white text-gray-300"
+                    }`}
+                  >
+                    {savingPrice === flavor ? (
+                      <Loader2 size={18} className="animate-spin" />
+                    ) : precoOk === flavor || !alterado ? (
+                      <Check size={20} />
+                    ) : (
+                      <Save size={18} />
+                    )}
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </section>
 
@@ -448,19 +499,25 @@ export default function SettingsPage() {
                   </label>
                   <div className="flex gap-2">
                     <input
-                      type="number"
+                      type="text"
+                      inputMode="decimal"
                       value={amountInput}
-                      onChange={(e) => setAmountInput(e.target.value)}
+                      onChange={(e) => setAmountInput(e.target.value.replace(/[^\d.,]/g, ""))}
                       placeholder="Ex: 500"
-                      className="flex-1 bg-[#F3F4F6] border-none rounded-xl py-3 px-4 text-gray-700 font-medium focus:ring-2 focus:ring-[#7C3AED]"
+                      className="flex-1 min-w-0 bg-[#F3F4F6] border-none rounded-xl py-3 px-4 text-gray-700 font-medium focus:ring-2 focus:ring-[#7C3AED] outline-none"
                     />
                     <div className="w-20 flex items-center justify-center bg-[#F3F4F6] rounded-xl text-gray-500 text-sm font-bold border border-gray-200 uppercase">
-                      {selectedUnit || "--"}
+                      {isBigUnit(selectedUnit)
+                        ? selectedUnit.toLowerCase() === "kg"
+                          ? "g"
+                          : "ml"
+                        : selectedUnit || "--"}
                     </div>
                   </div>
-                  {selectedUnit === "kg" && (
+                  {isBigUnit(selectedUnit) && (
                     <p className="text-[10px] text-orange-500 mt-1 pl-1">
-                      * Digite em gramas (g)
+                      * O insumo está em {selectedUnit.toUpperCase()}: digite em{" "}
+                      {selectedUnit.toLowerCase() === "kg" ? "gramas (g)" : "mililitros (ml)"}
                     </p>
                   )}
                 </div>
@@ -519,16 +576,11 @@ export default function SettingsPage() {
                             {item.MATERIAS_PRIMAS.nm_item}
                           </span>
                           <span className="text-[10px] text-gray-400 uppercase font-bold">
-                            Por unidade:{" "}
-                            {(
-                              item.qt_uso_por_unidade *
-                              (item.MATERIAS_PRIMAS.ds_unidade_medida === "kg"
-                                ? 1000
-                                : 1)
-                            ).toFixed(2)}{" "}
-                            {item.MATERIAS_PRIMAS.ds_unidade_medida === "kg"
-                              ? "g"
-                              : item.MATERIAS_PRIMAS.ds_unidade_medida}
+                            Por brownie:{" "}
+                            {porBrownie(
+                              item.qt_uso_por_unidade,
+                              item.MATERIAS_PRIMAS.ds_unidade_medida,
+                            )}
                           </span>
                         </div>
                       </div>

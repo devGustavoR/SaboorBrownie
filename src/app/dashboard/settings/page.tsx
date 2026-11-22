@@ -1,5 +1,6 @@
 "use client";
 
+import { RoletaTeste } from "@/components/RoletaTeste";
 import { supabase } from "@/lib/supabase";
 import {
   Check,
@@ -22,19 +23,35 @@ const FLAVORS = [
   "TRADICIONAL",
   "NINHO",
   "BRIGADEIRO",
-  "DOCE_DE_LEITE",
+  "MARACUJA",
+  "MORANGO",
   "MISTO",
-  "SEM_RECHEIO",
 ];
 
 const FLAVOR_LABELS: Record<string, string> = {
   TRADICIONAL: "Tradicional",
   NINHO: "Ninho",
   BRIGADEIRO: "Brigadeiro",
-  DOCE_DE_LEITE: "Doce de Leite",
+  MARACUJA: "Maracujá",
+  MORANGO: "Morango",
   MISTO: "Misto",
-  SEM_RECHEIO: "Sem Recheio",
 };
+
+// Massa compartilhada por todos os sabores (a receita do brownie é sempre a mesma);
+// cada sabor guarda só os ingredientes do recheio.
+const BASE = "BASE";
+// Segunda massa (cake brownie): usa os mesmos recheios do brownie
+const BASE_CAKE = "BASE_CAKE";
+const BASE_BOMBOM = "BASE_BOMBOM"; // massa dos bombons brownie
+const BASE_LABELS: Record<string, string> = {
+  [BASE]: "Massa Brownie",
+  [BASE_CAKE]: "Massa Cake Brownie",
+  [BASE_BOMBOM]: "Massa Bombom Brownie",
+};
+const isBase = (key: string) => key in BASE_LABELS;
+const RECIPE_TABS = [BASE, BASE_CAKE, BASE_BOMBOM, ...FLAVORS];
+// Tradicional é o brownie sem recheio: usa só a massa base
+const SEM_RECHEIO_KEY = "TRADICIONAL";
 
 // Rendimento base (quantos brownies a receita rende) fica salvo por sabor neste navegador
 const YIELD_KEY = (flavor: string) => `saboor:rendimento:${flavor}`;
@@ -64,7 +81,7 @@ export default function SettingsPage() {
   const [savingPrice, setSavingPrice] = useState<string | null>(null); // Qual sabor está salvando
 
   // Receita
-  const [selectedFlavor, setSelectedFlavor] = useState("TRADICIONAL");
+  const [selectedFlavor, setSelectedFlavor] = useState(BASE);
   const [materials, setMaterials] = useState<any[]>([]);
   const [recipeItems, setRecipeItems] = useState<any[]>([]);
 
@@ -111,7 +128,7 @@ export default function SettingsPage() {
 
   // Rendimento salvo do sabor inicial (localStorage só existe no cliente)
   useEffect(() => {
-    const timer = setTimeout(() => setRecipeYield(readYield("TRADICIONAL")), 0);
+    const timer = setTimeout(() => setRecipeYield(readYield(BASE)), 0);
     return () => clearTimeout(timer);
   }, []);
 
@@ -350,7 +367,7 @@ export default function SettingsPage() {
 
           {/* Abas de Sabor */}
           <div className="flex flex-wrap gap-2 mb-8">
-            {FLAVORS.map((flavor) => (
+            {RECIPE_TABS.map((flavor) => (
               <button
                 key={flavor}
                 onClick={() => {
@@ -364,7 +381,7 @@ export default function SettingsPage() {
                     : "bg-white text-gray-600 hover:bg-gray-100"
                 }`}
               >
-                {FLAVOR_LABELS[flavor]}
+                {isBase(flavor) ? BASE_LABELS[flavor] : FLAVOR_LABELS[flavor]}
               </button>
             ))}
           </div>
@@ -373,7 +390,10 @@ export default function SettingsPage() {
             {/* Coluna Esquerda: Formulário */}
             <div className="bg-white rounded-2xl p-6 shadow-sm h-fit sticky top-24 border border-purple-50">
               <h3 className="text-lg font-bold text-[#7C3AED] mb-6 flex items-center gap-2">
-                <Plus size={20} /> Novo Ingrediente
+                <Plus size={20} />{" "}
+                {isBase(selectedFlavor)
+                  ? "Novo Ingrediente da Massa"
+                  : "Novo Ingrediente do Recheio"}
               </h3>
 
               {/* Config Rendimento */}
@@ -465,7 +485,9 @@ export default function SettingsPage() {
             <div className="lg:col-span-2 bg-white rounded-2xl p-6 md:p-8 shadow-sm border border-purple-50 min-h-[400px]">
               <div className="flex justify-between items-center mb-6 pb-4 border-b border-gray-100">
                 <h3 className="text-xl font-bold text-gray-900">
-                  Receita: {FLAVOR_LABELS[selectedFlavor]}
+                  {isBase(selectedFlavor)
+                    ? `${BASE_LABELS[selectedFlavor]} (todos os recheios)`
+                    : `Recheio: ${FLAVOR_LABELS[selectedFlavor]}`}
                 </h3>
                 <span className="bg-gray-100 text-gray-500 px-3 py-1 rounded-lg text-xs font-bold uppercase tracking-wide">
                   {recipeItems.length} Ingredientes
@@ -476,7 +498,11 @@ export default function SettingsPage() {
                 {recipeItems.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-12 text-gray-300">
                     <Cookie size={48} className="mb-2 opacity-50" />
-                    <p>Nenhum ingrediente cadastrado.</p>
+                    <p>
+                      {selectedFlavor === SEM_RECHEIO_KEY
+                        ? "Sem recheio: usa só a massa base."
+                        : "Nenhum ingrediente cadastrado."}
+                    </p>
                   </div>
                 ) : (
                   recipeItems.map((item) => (
@@ -589,6 +615,11 @@ export default function SettingsPage() {
             </div>
           </div>
         </section>
+
+        {/* --- SEÇÃO 3: TESTE DA ROLETA --- */}
+        <div className="mt-14">
+          <RoletaTeste />
+        </div>
       </main>
     </div>
   );

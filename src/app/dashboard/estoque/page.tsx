@@ -17,17 +17,17 @@ const FLAVORS = [
   "TRADICIONAL",
   "NINHO",
   "BRIGADEIRO",
-  "DOCE_DE_LEITE",
+  "MARACUJA",
+  "MORANGO",
   "MISTO",
-  "SEM_RECHEIO",
 ];
 const FLAVOR_LABELS: Record<string, string> = {
   TRADICIONAL: "Tradicional",
   NINHO: "Ninho",
   BRIGADEIRO: "Brigadeiro",
-  DOCE_DE_LEITE: "Doce de Leite",
+  MARACUJA: "Maracujá",
+  MORANGO: "Morango",
   MISTO: "Misto",
-  SEM_RECHEIO: "Sem Recheio",
 };
 
 export default function InventoryPage() {
@@ -44,9 +44,9 @@ export default function InventoryPage() {
 
   // Inputs
   const [simpleQty, setSimpleQty] = useState("12"); // Padrão 12 (1 tabuleiro)
-  const [mixedFlavor1, setMixedFlavor1] = useState("TRADICIONAL");
+  const [mixedFlavor1, setMixedFlavor1] = useState("NINHO");
   const [mixedQty1, setMixedQty1] = useState("9");
-  const [mixedFlavor2, setMixedFlavor2] = useState("SEM_RECHEIO");
+  const [mixedFlavor2, setMixedFlavor2] = useState("TRADICIONAL");
   const [mixedQty2, setMixedQty2] = useState("3");
 
   // --- CARREGAR DADOS ---

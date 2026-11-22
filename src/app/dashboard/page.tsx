@@ -31,20 +31,20 @@ const FLAVOR_METADATA: Record<
     desc: "Cobertura cremosa intensa",
     color: "bg-amber-200 text-amber-900",
   },
-  DOCE_DE_LEITE: {
-    label: "Doce de Leite",
-    desc: "Clássico argentino",
-    color: "bg-orange-100 text-orange-800",
+  MARACUJA: {
+    label: "Maracujá",
+    desc: "Trufado de maracujá",
+    color: "bg-yellow-200 text-yellow-900",
+  },
+  MORANGO: {
+    label: "Morango",
+    desc: "Geleia de morango",
+    color: "bg-rose-100 text-rose-800",
   },
   MISTO: {
     label: "Misto",
     desc: "Dois sabores em um",
     color: "bg-purple-100 text-purple-800",
-  },
-  SEM_RECHEIO: {
-    label: "Sem Recheio",
-    desc: "Simples e puro",
-    color: "bg-gray-100 text-gray-600",
   },
 };
 

@@ -64,7 +64,7 @@ export default function AnalyticsPage() {
       // 1. Buscar Vendas
       const { data: sales } = await supabase
         .from("VENDAS")
-        .select(`id_venda, vl_preco_venda, ts_venda, LOTES ( tp_sabor )`)
+        .select(`cd_venda, vl_preco_venda, ts_venda, LOTES ( tp_sabor )`)
         .gte("ts_venda", thirtyDaysAgo)
         .order("ts_venda", { ascending: false });
 
@@ -110,7 +110,7 @@ export default function AnalyticsPage() {
         // Atividade Recente (Merge)
         const allActivities = [
           ...sales.map((s) => ({
-            id: s.id_venda,
+            id: s.cd_venda,
             type: "SALE",
             desc: "Venda",
             amount: s.vl_preco_venda,

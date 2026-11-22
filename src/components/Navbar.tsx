@@ -12,6 +12,7 @@ const NAV_LINKS = [
   { name: "Estoque", href: "/dashboard/estoque" },
   { name: "Materiais", href: "/dashboard/materiais" },
   { name: "Evento", href: "/dashboard/evento" },
+  { name: "Dia do Evento", href: "/dashboard/dia-evento" },
   { name: "Configurações", href: "/dashboard/settings" },
 ];
 

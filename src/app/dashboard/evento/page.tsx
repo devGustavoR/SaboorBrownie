@@ -40,6 +40,11 @@ interface Draft {
   nomeEvento: string;
   qtdSabores: Record<string, string>;
   precos: Record<string, Preco>;
+  // preço de venda por brownie neste evento (vazio = usa o da tabela de preços)
+  valoresVenda?: Record<string, string>;
+  // % da receita repassado (ex: 10% para a igreja) e para quem vai
+  descontoPct?: string;
+  descontoDestino?: string;
 }
 
 interface SavedBudget {
@@ -47,13 +52,81 @@ interface SavedBudget {
   nomeEvento: string;
   qtdSabores: Record<string, string>;
   precos: Record<string, Preco>;
+  valoresVenda?: Record<string, string>;
+  descontoPct?: string;
+  descontoDestino?: string;
   totalBrownies: number;
   total: number;
   salvoEm: string;
+  // orçamento do formato antigo (lista livre de itens): só consulta
+  legado?: LegacyItem[];
 }
+
+interface LegacyItem {
+  nome: string;
+  qtd: string;
+  unidade: string;
+  preco: string;
+}
+
+// tp_sabor da receita da massa, compartilhada por todos os sabores
+const BASE = "BASE";
+const BASE_CAKE = "BASE_CAKE";
+const BASE_BOMBOM = "BASE_BOMBOM";
+
+// Massas disponíveis: cada recheio (sabor) pode ser feito em qualquer uma.
+// A quantidade do brownie fica na chave do sabor (compatível com orçamentos
+// antigos); as demais ficam em "SABOR:CAKE", "SABOR:BOMBOM".
+type BaseId = "BROWNIE" | "CAKE" | "BOMBOM";
+const BASES: { id: BaseId; ficha: string; label: string; curto: string }[] = [
+  { id: "BROWNIE", ficha: BASE, label: "Brownie", curto: "Brownie" },
+  { id: "CAKE", ficha: BASE_CAKE, label: "Cake Brownie", curto: "Cake" },
+  { id: "BOMBOM", ficha: BASE_BOMBOM, label: "Bombom Brownie", curto: "Bombom" },
+];
+const chave = (sabor: string, base: BaseId) =>
+  base === "BROWNIE" ? sabor : `${sabor}:${base}`;
+const baseDe = (id: BaseId) => BASES.find((b) => b.id === id)!;
 
 const DRAFT_KEY = "saboor:preparo-evento-v2";
 const BUDGETS_KEY = "saboor:orcamentos-evento-v2";
+const OLD_BUDGETS_KEY = "saboor:orcamentos-evento"; // formato antes da ficha técnica
+
+interface OldBudget {
+  id?: string;
+  nomeEvento?: string;
+  unidadesProduzir?: string;
+  itens?: Partial<LegacyItem>[];
+  total?: number;
+  salvoEm?: string;
+}
+
+// Converte os orçamentos do formato antigo; a chave antiga não é apagada.
+const importOldBudgets = (current: SavedBudget[]): SavedBudget[] => {
+  const old = readJSON<OldBudget[]>(OLD_BUDGETS_KEY, []);
+  if (!Array.isArray(old)) return current;
+  const ids = new Set(current.map((b) => b.id));
+  const converted: SavedBudget[] = [];
+  for (const o of old) {
+    const id = o.id ? `old-${o.id}` : newId();
+    if (ids.has(id)) continue;
+    converted.push({
+      id,
+      nomeEvento: o.nomeEvento || "Evento sem nome",
+      qtdSabores: {},
+      precos: {},
+      totalBrownies: Number(o.unidadesProduzir) || 0,
+      total: Number(o.total) || 0,
+      salvoEm: o.salvoEm ?? new Date().toISOString(),
+      legado: (o.itens ?? []).map((i) => ({
+        nome: i.nome ?? "",
+        qtd: String(i.qtd ?? ""),
+        unidade: i.unidade ?? "un",
+        preco: String(i.preco ?? ""),
+      })),
+    });
+  }
+  return converted.length ? [...current, ...converted] : current;
+};
 
 const newId = () => Math.random().toString(36).slice(2, 10);
 
@@ -79,11 +152,21 @@ const defaultTam = (m: Materia) => {
 };
 
 const formatSabor = (sabor: string) =>
-  sabor
+  sabor === "MARACUJA"
+    ? "Maracujá"
+    : sabor
     .toLowerCase()
     .split("_")
     .map((p) => (p === "de" ? p : p.charAt(0).toUpperCase() + p.slice(1)))
     .join(" ");
+
+// Sem Recheio e Tradicional viraram o mesmo sabor: soma as quantidades antigas
+const unirSemRecheio = (q: Record<string, string>): Record<string, string> => {
+  if (!("SEM_RECHEIO" in q)) return q;
+  const { SEM_RECHEIO, ...resto } = q;
+  const soma = (Number(resto.TRADICIONAL) || 0) + (Number(SEM_RECHEIO) || 0);
+  return { ...resto, ...(soma > 0 ? { TRADICIONAL: String(soma) } : {}) };
+};
 
 const readJSON = <T,>(key: string, fallback: T): T => {
   try {
@@ -107,6 +190,12 @@ export default function EventPrepPage() {
   const [nomeEvento, setNomeEvento] = useState("");
   const [qtdSabores, setQtdSabores] = useState<Record<string, string>>({});
   const [precos, setPrecos] = useState<Record<string, Preco>>({});
+  const [valoresVenda, setValoresVenda] = useState<Record<string, string>>({});
+  const [precoPadrao, setPrecoPadrao] = useState<Record<string, number>>({});
+  const [descontoPct, setDescontoPct] = useState("");
+  const [descontoDestino, setDescontoDestino] = useState("");
+  // massa exibida na lista de sabores (a quantidade de cada uma é guardada à parte)
+  const [baseAtiva, setBaseAtiva] = useState<BaseId>("BROWNIE");
 
   const [saved, setSaved] = useState<SavedBudget[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -116,7 +205,7 @@ export default function EventPrepPage() {
   useEffect(() => {
     const load = async () => {
       const [precosRes, fichaRes, materiasRes] = await Promise.all([
-        supabase.from("TABELA_PRECOS").select("tp_sabor"),
+        supabase.from("TABELA_PRECOS").select("tp_sabor, vl_preco"),
         supabase
           .from("FICHA_TECNICA")
           .select("tp_sabor, cd_materia, qt_uso_por_unidade"),
@@ -133,10 +222,18 @@ export default function EventPrepPage() {
           cd_materia: f.cd_materia as string,
           qt_uso_por_unidade: Number(f.qt_uso_por_unidade),
         }));
-        const nomes = new Set<string>([
-          ...(precosRes.data ?? []).map((p) => p.tp_sabor as string),
-          ...fichaRows.map((f) => f.tp_sabor),
-        ]);
+        // "BASE" é a massa compartilhada, não é um sabor vendável
+        const nomes = new Set<string>(
+          [
+            ...(precosRes.data ?? []).map((p) => p.tp_sabor as string),
+            ...fichaRows.map((f) => f.tp_sabor),
+          ].filter((s) => !BASES.some((b) => b.ficha === s)),
+        );
+        const padrao: Record<string, number> = {};
+        for (const p of precosRes.data ?? []) {
+          padrao[p.tp_sabor as string] = Number(p.vl_preco) || 0;
+        }
+        setPrecoPadrao(padrao);
         setSabores([...nomes].sort());
         setFicha(fichaRows);
         setMaterias((materiasRes.data ?? []) as Materia[]);
@@ -154,7 +251,10 @@ export default function EventPrepPage() {
       if (draft) {
         setCurrentId(draft.currentId ?? null);
         setNomeEvento(draft.nomeEvento ?? "");
-        setQtdSabores(draft.qtdSabores ?? {});
+        setQtdSabores(unirSemRecheio(draft.qtdSabores ?? {}));
+        setValoresVenda(draft.valoresVenda ?? {});
+        setDescontoPct(draft.descontoPct ?? "");
+        setDescontoDestino(draft.descontoDestino ?? "");
         const limpos: Record<string, Preco> = {};
         for (const [id, p] of Object.entries(draft.precos ?? {})) {
           limpos[id] = {
@@ -165,7 +265,16 @@ export default function EventPrepPage() {
         }
         setPrecos(limpos);
       }
-      setSaved(readJSON<SavedBudget[]>(BUDGETS_KEY, []));
+      const atuais = readJSON<SavedBudget[]>(BUDGETS_KEY, []);
+      const todos = importOldBudgets(atuais);
+      if (todos !== atuais) {
+        try {
+          localStorage.setItem(BUDGETS_KEY, JSON.stringify(todos));
+        } catch {
+          // sem storage: os antigos aparecem só nesta sessão
+        }
+      }
+      setSaved(todos);
       setLoaded(true);
     }, 0);
     return () => clearTimeout(timer);
@@ -174,34 +283,73 @@ export default function EventPrepPage() {
   // --- Rascunho salvo automaticamente ---
   useEffect(() => {
     if (!loaded) return;
-    const draft: Draft = { currentId, nomeEvento, qtdSabores, precos };
+    const draft: Draft = {
+      currentId,
+      nomeEvento,
+      qtdSabores,
+      precos,
+      valoresVenda,
+      descontoPct,
+      descontoDestino,
+    };
     try {
       localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
     } catch {
       // storage indisponível: segue sem rascunho
     }
-  }, [currentId, nomeEvento, qtdSabores, precos, loaded]);
+  }, [
+    currentId,
+    nomeEvento,
+    qtdSabores,
+    precos,
+    valoresVenda,
+    descontoPct,
+    descontoDestino,
+    loaded,
+  ]);
 
   // --- Cálculos ---
   const calc = useMemo(() => {
     const materiaMap = new Map(materias.map((m) => [m.cd_materia, m]));
 
-    // Matérias que aparecem em alguma ficha técnica
+    // Receita = massa escolhida (brownie ou cake) + recheio do sabor
+    const baseRowsDe = (b: BaseId) =>
+      ficha.filter((f) => f.tp_sabor === baseDe(b).ficha);
+    const fichaDe = (s: string, b: BaseId) => [
+      ...baseRowsDe(b),
+      ...ficha.filter((f) => f.tp_sabor === s),
+    ];
+    const qtdDe = (s: string, b: BaseId) => toNumber(qtdSabores[chave(s, b)]);
+
+    // Matérias listadas: sempre as da massa do brownie; as do cake e as dos
+    // recheios só aparecem quando há quantidade no evento
     const usadas = new Map<string, Materia>();
-    for (const f of ficha) {
-      const m = materiaMap.get(f.cd_materia);
-      if (m) usadas.set(m.cd_materia, m);
+    const incluir = (rows: FichaRow[]) => {
+      for (const f of rows) {
+        const m = materiaMap.get(f.cd_materia);
+        if (m) usadas.set(m.cd_materia, m);
+      }
+    };
+    incluir(baseRowsDe("BROWNIE"));
+    for (const s of sabores) {
+      for (const b of BASES) {
+        if (qtdDe(s, b.id) > 0) incluir(fichaDe(s, b.id));
+      }
     }
 
     // Necessário de cada matéria = Σ (brownies do sabor × uso por unidade)
     const necessario = new Map<string, number>();
-    for (const f of ficha) {
-      const qtd = toNumber(qtdSabores[f.tp_sabor]);
-      if (qtd <= 0) continue;
-      necessario.set(
-        f.cd_materia,
-        (necessario.get(f.cd_materia) ?? 0) + qtd * f.qt_uso_por_unidade,
-      );
+    for (const s of sabores) {
+      for (const b of BASES) {
+        const qtd = qtdDe(s, b.id);
+        if (qtd <= 0) continue;
+        for (const f of fichaDe(s, b.id)) {
+          necessario.set(
+            f.cd_materia,
+            (necessario.get(f.cd_materia) ?? 0) + qtd * f.qt_uso_por_unidade,
+          );
+        }
+      }
     }
 
     // Tamanho da embalagem (informado ou padrão) e R$ por unidade de medida
@@ -238,42 +386,83 @@ export default function EventPrepPage() {
         };
       });
 
-    const totalBrownies = sabores.reduce(
-      (acc, s) => acc + toNumber(qtdSabores[s]),
-      0,
-    );
+    const totalPorBase: Record<BaseId, number> = {
+      BROWNIE: 0,
+      CAKE: 0,
+      BOMBOM: 0,
+    };
+    for (const s of sabores) {
+      for (const b of BASES) totalPorBase[b.id] += qtdDe(s, b.id);
+    }
+    const totalBrownies = BASES.reduce((acc, b) => acc + totalPorBase[b.id], 0);
     const totalCompra = linhas.reduce((acc, l) => acc + l.compra, 0);
     const totalUso = linhas.reduce((acc, l) => acc + l.uso, 0);
 
     // Custo (proporcional) de cada sabor
     const materiaPorId = new Map(materias.map((m) => [m.cd_materia, m]));
     const custoSabor: Record<string, number> = {};
+    const semFicha: string[] = [];
     for (const s of sabores) {
-      const porUnidade = ficha
-        .filter((f) => f.tp_sabor === s)
-        .reduce((acc, f) => {
+      for (const b of BASES) {
+        const porUnidade = fichaDe(s, b.id).reduce((acc, f) => {
           const m = materiaPorId.get(f.cd_materia);
           return m ? acc + f.qt_uso_por_unidade * precoUnit(m) : acc;
         }, 0);
-      custoSabor[s] = porUnidade * toNumber(qtdSabores[s]);
+        custoSabor[chave(s, b.id)] = porUnidade * qtdDe(s, b.id);
+        if (qtdDe(s, b.id) > 0 && fichaDe(s, b.id).length === 0) {
+          semFicha.push(chave(s, b.id));
+        }
+      }
     }
 
-    const semFicha = sabores.filter(
-      (s) =>
-        toNumber(qtdSabores[s]) > 0 && !ficha.some((f) => f.tp_sabor === s),
-    );
+    // Massa escolhida no evento, mas ainda sem ingredientes cadastrados
+    const massasSemIngrediente = BASES.filter(
+      (b) => totalPorBase[b.id] > 0 && baseRowsDe(b.id).length === 0,
+    ).map((b) => b.label);
     const semPreco = linhas.filter((l) => l.need > 0 && l.preco <= 0);
 
+    // Preço de venda: o digitado neste evento ou, se vazio, o da tabela de
+    // preços do sabor (o cake usa o mesmo, a não ser que seja informado)
+    const precoVenda = (s: string, b: BaseId) => {
+      const v = toNumber(valoresVenda[chave(s, b)]);
+      return v > 0 ? v : (precoPadrao[s] ?? 0);
+    };
+    let receita = 0;
+    for (const s of sabores) {
+      for (const b of BASES) receita += qtdDe(s, b.id) * precoVenda(s, b.id);
+    }
+
+    // Desconto repassado (ex: 10% para a igreja) sai da receita antes do lucro
+    const pct = Math.min(Math.max(toNumber(descontoPct), 0), 100);
+    const desconto = (receita * pct) / 100;
+    const receitaLiquida = receita - desconto;
+
     return {
+      precoVenda,
+      receita,
+      desconto,
+      receitaLiquida,
+      lucro: receitaLiquida - totalCompra,
       linhas,
       totalBrownies,
+      totalPorBase,
+      massasSemIngrediente,
       totalCompra,
       totalUso,
       custoSabor,
       semFicha,
       semPreco,
     };
-  }, [materias, ficha, sabores, qtdSabores, precos]);
+  }, [
+    materias,
+    ficha,
+    sabores,
+    qtdSabores,
+    precos,
+    valoresVenda,
+    precoPadrao,
+    descontoPct,
+  ]);
 
   const custoPorBrownie =
     calc.totalBrownies > 0 ? calc.totalUso / calc.totalBrownies : 0;
@@ -295,6 +484,9 @@ export default function EventPrepPage() {
     setCurrentId(null);
     setNomeEvento("");
     setQtdSabores({});
+    setValoresVenda({});
+    setDescontoPct("");
+    setDescontoDestino("");
   };
 
   const clearAll = () => {
@@ -324,6 +516,9 @@ export default function EventPrepPage() {
       nomeEvento: nomeEvento.trim() || "Evento sem nome",
       qtdSabores,
       precos,
+      valoresVenda,
+      descontoPct,
+      descontoDestino,
       totalBrownies: calc.totalBrownies,
       total: calc.totalCompra,
       salvoEm: new Date().toISOString(),
@@ -342,7 +537,10 @@ export default function EventPrepPage() {
   const openBudget = (b: SavedBudget) => {
     setCurrentId(b.id);
     setNomeEvento(b.nomeEvento);
-    setQtdSabores(b.qtdSabores);
+    setQtdSabores(unirSemRecheio(b.qtdSabores));
+    setValoresVenda(b.valoresVenda ?? {});
+    setDescontoPct(b.descontoPct ?? "");
+    setDescontoDestino(b.descontoDestino ?? "");
     setPrecos(b.precos);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -400,37 +598,134 @@ export default function EventPrepPage() {
                 <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
                   Brownies por sabor
                 </label>
-                <div className="mt-2 space-y-2">
+                {/* Massa: escolhe em qual base cada recheio será feito */}
+                <div className="mt-2 grid grid-cols-3 gap-1 p-1 bg-gray-100 rounded-xl">
+                  {BASES.map((b) => (
+                    <button
+                      key={b.id}
+                      type="button"
+                      onClick={() => setBaseAtiva(b.id)}
+                      className={`py-2 rounded-lg text-xs font-semibold transition-all ${
+                        baseAtiva === b.id
+                          ? "bg-white text-[#6B21A8] shadow-sm"
+                          : "text-gray-500 hover:text-gray-700"
+                      }`}
+                    >
+                      {b.curto}
+                      <span className="ml-1 text-gray-400 font-medium">
+                        ({formatQty(calc.totalPorBase[b.id])})
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-3 space-y-2">
                   {loadingDb && (
                     <p className="text-sm text-gray-400">Carregando...</p>
                   )}
-                  {sabores.map((s) => (
+                  {sabores.map((s) => {
+                    const k = chave(s, baseAtiva);
+                    const outras = BASES.filter(
+                      (b) =>
+                        b.id !== baseAtiva &&
+                        toNumber(qtdSabores[chave(s, b.id)]) > 0,
+                    )
+                      .map(
+                        (b) =>
+                          `${formatQty(toNumber(qtdSabores[chave(s, b.id)]))} ${b.curto}`,
+                      )
+                      .join(" · ");
+                    return (
                     <div key={s} className="flex items-center gap-3">
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-gray-800 truncate">
                           {formatSabor(s)}
                         </p>
-                        {toNumber(qtdSabores[s]) > 0 && (
+                        {toNumber(qtdSabores[k]) > 0 && (
                           <p className="text-xs text-gray-400">
-                            {formatCurrency(calc.custoSabor[s] ?? 0)}
+                            {formatCurrency(calc.custoSabor[k] ?? 0)}
                           </p>
                         )}
+                        {outras && (
+                          <p className="text-[11px] text-[#7C3AED]">
+                            Também: {outras}
+                          </p>
+                        )}
+                      </div>
+                      <div
+                        className="relative"
+                        title="Preço de venda de cada brownie neste evento"
+                      >
+                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none">
+                          R$
+                        </span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={valoresVenda[k] ?? ""}
+                          onChange={(e) =>
+                            setValoresVenda((prev) => ({
+                              ...prev,
+                              [k]: onlyNumber(e.target.value),
+                            }))
+                          }
+                          placeholder={
+                            precoPadrao[s]
+                              ? String(precoPadrao[s]).replace(".", ",")
+                              : "0"
+                          }
+                          className={`w-20 pl-7 text-right ${inputBase}`}
+                        />
                       </div>
                       <input
                         type="text"
                         inputMode="numeric"
-                        value={qtdSabores[s] ?? ""}
+                        value={qtdSabores[k] ?? ""}
                         onChange={(e) =>
                           setQtdSabores((prev) => ({
                             ...prev,
-                            [s]: e.target.value.replace(/[^\d]/g, ""),
+                            [k]: e.target.value.replace(/[^\d]/g, ""),
                           }))
                         }
                         placeholder="0"
-                        className={`w-24 text-right ${inputBase}`}
+                        className={`w-16 text-right ${inputBase}`}
                       />
                     </div>
-                  ))}
+                    );
+                  })}
+                  <p className="text-[11px] text-gray-400">
+                    Escolha a massa acima e informe o preço de venda (R$) e a
+                    quantidade de cada recheio nela. Vazio usa o preço da
+                    tabela de preços.
+                  </p>
+                </div>
+                <div className="mt-3 pt-3 border-t border-gray-100">
+                  <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                    Desconto sobre a receita
+                  </label>
+                  <div className="mt-2 flex items-center gap-3">
+                    <input
+                      type="text"
+                      value={descontoDestino}
+                      onChange={(e) => setDescontoDestino(e.target.value)}
+                      placeholder="Para quem? Ex: Igreja"
+                      className={`flex-1 min-w-0 ${inputBase}`}
+                    />
+                    <div className="relative">
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={descontoPct}
+                        onChange={(e) =>
+                          setDescontoPct(onlyNumber(e.target.value))
+                        }
+                        placeholder="0"
+                        className={`w-20 pr-7 text-right ${inputBase}`}
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none">
+                        %
+                      </span>
+                    </div>
+                  </div>
                 </div>
                 <div className="mt-3 pt-3 border-t border-gray-100 flex justify-between text-sm">
                   <span className="text-gray-500">Total</span>
@@ -455,6 +750,34 @@ export default function EventPrepPage() {
                   </span>
                   <span className="font-bold">
                     {formatCurrency(calc.totalUso)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-purple-200">Receita prevista</span>
+                  <span className="font-bold">
+                    {formatCurrency(calc.receita)}
+                  </span>
+                </div>
+                {calc.desconto > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-purple-200">
+                      Desconto ({descontoPct.trim()}%
+                      {descontoDestino.trim()
+                        ? ` — ${descontoDestino.trim()}`
+                        : ""}
+                      )
+                    </span>
+                    <span className="font-bold">
+                      − {formatCurrency(calc.desconto)}
+                    </span>
+                  </div>
+                )}
+                <div className="flex justify-between">
+                  <span className="text-purple-200">Lucro previsto</span>
+                  <span
+                    className={`font-bold ${calc.lucro < 0 ? "text-red-200" : ""}`}
+                  >
+                    {formatCurrency(calc.lucro)}
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -509,15 +832,32 @@ export default function EventPrepPage() {
                 </p>
               </div>
 
-              {(calc.semFicha.length > 0 || calc.semPreco.length > 0) && (
+              {(calc.semFicha.length > 0 ||
+                calc.semPreco.length > 0 ||
+                calc.massasSemIngrediente.length > 0) && (
                 <div className="mx-6 mt-4 p-3 rounded-xl bg-orange-50 border border-orange-100 text-sm text-orange-700 flex gap-2">
                   <AlertTriangle size={18} className="shrink-0 mt-0.5" />
                   <div>
+                    {calc.massasSemIngrediente.length > 0 && (
+                      <p>
+                        Massa sem ingredientes:{" "}
+                        {calc.massasSemIngrediente.join(", ")} (cadastre em
+                        Configurações &gt; Fichas Técnicas).
+                      </p>
+                    )}
                     {calc.semFicha.length > 0 && (
                       <p>
                         Sem ficha técnica:{" "}
-                        {calc.semFicha.map(formatSabor).join(", ")} (não entram
-                        no cálculo).
+                        {calc.semFicha
+                          .map((k) => {
+                            const [sabor, base] = k.split(":");
+                            const b = BASES.find((x) => x.id === base);
+                            return b
+                              ? `${formatSabor(sabor)} (${b.curto})`
+                              : formatSabor(k);
+                          })
+                          .join(", ")}{" "}
+                        (não entram no cálculo).
                       </p>
                     )}
                     {calc.semPreco.length > 0 && (
@@ -672,22 +1012,44 @@ export default function EventPrepPage() {
                     <div className="min-w-0">
                       <p className="font-semibold text-gray-900 text-sm truncate">
                         {b.nomeEvento}
+                        {b.legado && (
+                          <span className="ml-2 text-[10px] font-bold uppercase text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
+                            Antigo
+                          </span>
+                        )}
                       </p>
                       <p className="text-xs text-gray-500">
                         {formatQty(b.totalBrownies)} brownies ·{" "}
                         {new Date(b.salvoEm).toLocaleDateString("pt-BR")}
                       </p>
+                      {b.legado && b.legado.length > 0 && (
+                        <details className="mt-1 text-xs text-gray-500">
+                          <summary className="cursor-pointer text-[#7C3AED]">
+                            Ver itens ({b.legado.length})
+                          </summary>
+                          <ul className="mt-1 space-y-0.5">
+                            {b.legado.map((i, idx) => (
+                              <li key={idx}>
+                                {i.nome}: {i.qtd} {i.unidade} ×{" "}
+                                {formatCurrency(toNumber(i.preco))}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
                     </div>
                     <div className="flex items-center gap-3 shrink-0">
                       <span className="font-bold text-[#6B21A8]">
                         {formatCurrency(b.total)}
                       </span>
-                      <button
-                        onClick={() => openBudget(b)}
-                        className="px-3 py-1.5 text-xs font-semibold text-[#7C3AED] bg-purple-100 rounded-lg hover:bg-purple-200 transition-colors"
-                      >
-                        Abrir
-                      </button>
+                      {!b.legado && (
+                        <button
+                          onClick={() => openBudget(b)}
+                          className="px-3 py-1.5 text-xs font-semibold text-[#7C3AED] bg-purple-100 rounded-lg hover:bg-purple-200 transition-colors"
+                        >
+                          Abrir
+                        </button>
+                      )}
                       <button
                         onClick={() => deleteBudget(b.id)}
                         className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
